@@ -1,0 +1,3 @@
+[submodule "dev/freesurfer"]
+	path = dev/freesurfer
+	url = https://github.com/freesurfer/freesurfer

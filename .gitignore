@@ -1,0 +1,13 @@
+*.nii.gz
+*.npz
+*.prof
+*.log
+*.onnx
+*.h5
+*.pt
+build/
+dist/   
+*.egg
+__pycache__
+!test/res/*.nii.gz
+*.egg-info

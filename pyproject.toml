@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "brain_segmentation_tools"
+version = "0.1.0"
+requires-python = ">=3.10"
+description = "A fast segmentation tool using synthetic data."
+authors = [
+    { name = "John Z", email = "johnz@example.com" }
+]
+readme = "README.md"
+license = { text = "MIT" }
+dependencies = [
+    "monai",
+    "nibabel",
+    "scipy",
+    "scikit-image",
+    "fire",
+    "numba",
+    "cucim-cu12",
+    "cupy-cuda12x",
+    "platformdirs",
+    "tqdm"
+
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+dev = ["h5py"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+
+[project.scripts]
+synthseg = "brain_segmentation_tools.app:main"
+synthseg-models = "brain_segmentation_tools.convert_models:main"
+
+[tool.setuptools]
+packages = ["brain_segmentation_tools"]
+
+[tool.setuptools.package-data]
+brain_segmentation_tools = ["*.json"]
