@@ -7,7 +7,9 @@ import pytest
 from brain_segmentation_tools.model_manager import ModelManager
 
 
-def test_model_download_and_cache_reuse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_model_download_and_cache_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     model_name = "synthstrip"
     model_type = "normal"
     version = "1"
@@ -19,13 +21,17 @@ def test_model_download_and_cache_reuse(tmp_path: Path, monkeypatch: pytest.Monk
     download_calls: list[tuple[str, Path]] = []
     original_download = ModelManager._download_pt
 
-    def wrapped_download(url: str, target_path: Path, *, expected_hash: str | None = None) -> None:
+    def wrapped_download(
+        url: str, target_path: Path, *, expected_hash: str | None = None
+    ) -> None:
         download_calls.append((url, Path(target_path)))
         original_download(url, target_path, expected_hash=expected_hash)
 
     monkeypatch.setattr(ModelManager, "_download_pt", staticmethod(wrapped_download))
 
-    spec = manager.get_spec(model_name=model_name, model_type=model_type, version=version)
+    spec = manager.get_spec(
+        model_name=model_name, model_type=model_type, version=version
+    )
 
     try:
         first_path = manager.get_model_path(
@@ -36,7 +42,10 @@ def test_model_download_and_cache_reuse(tmp_path: Path, monkeypatch: pytest.Monk
         )
     except RuntimeError as exc:
         if "Failed downloading model" in str(exc):
-            pytest.skip("Network unavailable or model host unreachable; skipping download/cache integration test")
+            pytest.skip(
+                "Network unavailable or model host unreachable; "
+                "skipping download/cache integration test"
+            )
         raise
 
     assert first_path.exists()

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import shutil
+import urllib.request
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-import os
-import shutil
-import urllib.request
 from typing import Any
 
 import torch
@@ -35,14 +34,14 @@ class ModelSpec:
         return f"{self.model_name}:{self.model_type}:{self.version}"
 
 
-
-
 class ModelManager:
     def __init__(self, *, dev_mode: bool | None = None):
         self.repo_root = Path(__file__).resolve().parent.parent
         self.freesurfer_root = self.repo_root / "dev" / "freesurfer"
         self.resource_models_root = utils.RESOURCE_PATH / "models"
-        cache_root = Path(user_cache_dir("brain_segmentation_tools", "brain_segmentation_tools"))
+        cache_root = Path(
+            user_cache_dir("brain_segmentation_tools", "brain_segmentation_tools")
+        )
         self.cache_dir = cache_root / "models"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.dev_mode = self.freesurfer_root.exists() if dev_mode is None else dev_mode
@@ -155,7 +154,9 @@ class ModelManager:
                 and spec.version == clean_version
             ):
                 return spec
-        raise KeyError(f"Model not configured: {model_name}:{model_type}:{clean_version}")
+        raise KeyError(
+            f"Model not configured: {model_name}:{model_type}:{clean_version}"
+        )
 
     def get_model_path(
         self,
@@ -165,7 +166,9 @@ class ModelManager:
         version: str,
         allow_h5_in_dev: bool = True,
     ) -> Path:
-        spec = self.get_spec(model_name=model_name, model_type=model_type, version=version)
+        spec = self.get_spec(
+            model_name=model_name, model_type=model_type, version=version
+        )
 
         if self.dev_mode:
             dev_pt = self._dev_pt_path(spec)
@@ -204,7 +207,9 @@ class ModelManager:
         version: str,
         output_path: str | Path,
     ) -> Path:
-        spec = self.get_spec(model_name=model_name, model_type=model_type, version=version)
+        spec = self.get_spec(
+            model_name=model_name, model_type=model_type, version=version
+        )
         if spec.framework != "synthseg_unet":
             raise ValueError(f"{spec.key} is not an h5-backed UNet model")
         h5_path = self._dev_h5_path(spec)
@@ -212,7 +217,9 @@ class ModelManager:
             raise FileNotFoundError(f"Missing source h5 for {spec.key}: {h5_path}")
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        self._convert_unet_h5_to_pt(spec=spec, h5_path=h5_path, output_pt_path=output_path)
+        self._convert_unet_h5_to_pt(
+            spec=spec, h5_path=h5_path, output_pt_path=output_path
+        )
         return output_path
 
     def _dev_h5_path(self, spec: ModelSpec) -> Path | None:
@@ -242,7 +249,9 @@ class ModelManager:
         return sha256(path.read_bytes()).hexdigest()[:12]
 
     @staticmethod
-    def _download_pt(url: str, target_path: Path, *, expected_hash: str | None = None) -> None:
+    def _download_pt(
+        url: str, target_path: Path, *, expected_hash: str | None = None
+    ) -> None:
         target_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = target_path.with_suffix(target_path.suffix + ".tmp")
         try:
@@ -282,13 +291,17 @@ class ModelManager:
         if temp_out.exists():
             temp_out.unlink()
         if dev_h5 is not None and dev_h5.exists():
-            self._convert_unet_h5_to_pt(spec=spec, h5_path=dev_h5, output_pt_path=temp_out)
+            self._convert_unet_h5_to_pt(
+                spec=spec, h5_path=dev_h5, output_pt_path=temp_out
+            )
             return temp_out
 
         return self._cached_pt_path(spec)
 
     @staticmethod
-    def _convert_unet_h5_to_pt(*, spec: ModelSpec, h5_path: Path, output_pt_path: Path) -> None:
+    def _convert_unet_h5_to_pt(
+        *, spec: ModelSpec, h5_path: Path, output_pt_path: Path
+    ) -> None:
         if spec.unet_kwargs is None:
             raise ValueError(f"Missing unet_kwargs in model config for {spec.key}")
         model = UNet(

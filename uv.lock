@@ -22,6 +22,7 @@ dependencies = [
     { name = "scikit-image" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.16.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "torch" },
     { name = "tqdm" },
 ]
 
@@ -46,6 +47,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'test'" },
     { name = "scikit-image" },
     { name = "scipy" },
+    { name = "torch" },
     { name = "tqdm" },
 ]
 provides-extras = ["test", "dev"]

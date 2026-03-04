@@ -22,7 +22,8 @@ dependencies = [
     "cucim-cu12",
     "cupy-cuda12x",
     "platformdirs",
-    "tqdm"
+    "tqdm",
+    "torch"
 
 ]
 
@@ -32,6 +33,25 @@ dev = ["h5py"]
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
+
+[tool.ruff.lint]
+select = [
+    # pycodestyle
+    "E",
+    # Pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # flake8-simplify
+    "SIM",
+    # isort
+    "I",
+]
+
+[tool.ruff]
+extend-exclude = ["dev"]
 
 [project.scripts]
 synthseg = "brain_segmentation_tools.app:main"

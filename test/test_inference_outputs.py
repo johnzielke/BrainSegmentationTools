@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
 import shutil
+from pathlib import Path
 
 import nibabel as nib
 import numpy as np
 import pytest
 import torch
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TEST_RES_DIR = REPO_ROOT / "test" / "res"
@@ -91,15 +90,31 @@ def generated_outputs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Pat
     local_parcellation_model = model_cache_dir / "synthseg_parcellation_2.0.pt"
     local_synthstrip_model = model_cache_dir / "synthstrip_normal_1.pt"
 
-    def _local_model_path(*, model_name: str, model_type: str, version: str, allow_h5_in_dev: bool = True) -> Path:
+    def _local_model_path(
+        *, model_name: str, model_type: str, version: str, allow_h5_in_dev: bool = True
+    ) -> Path:
         clean_version = str(version).removeprefix("v")
-        if model_name == "synthseg" and model_type == "segmentation" and clean_version == "2.0":
+        if (
+            model_name == "synthseg"
+            and model_type == "segmentation"
+            and clean_version == "2.0"
+        ):
             return local_segmentation_model
-        if model_name == "synthseg" and model_type == "parcellation" and clean_version == "2.0":
+        if (
+            model_name == "synthseg"
+            and model_type == "parcellation"
+            and clean_version == "2.0"
+        ):
             return local_parcellation_model
-        if model_name == "synthstrip" and model_type == "normal" and clean_version == "1":
+        if (
+            model_name == "synthstrip"
+            and model_type == "normal"
+            and clean_version == "1"
+        ):
             return local_synthstrip_model
-        raise KeyError(f"No local model mapping for {model_name}:{model_type}:{clean_version}")
+        raise KeyError(
+            f"No local model mapping for {model_name}:{model_type}:{clean_version}"
+        )
 
     app.model_manager.get_model_path = _local_model_path
 
@@ -151,7 +166,9 @@ def test_synthseg_output_matches_reference(generated_outputs: dict[str, Path]) -
     )
 
 
-def test_synthstrip_output_matches_reference(generated_outputs: dict[str, Path]) -> None:
+def test_synthstrip_output_matches_reference(
+    generated_outputs: dict[str, Path],
+) -> None:
     actual_data, actual_affine = _load_nifti(generated_outputs["brain_mask"])
     expected_data, expected_affine = _load_nifti(TEST_RES_DIR / "synthstrip.nii.gz")
 
@@ -163,11 +180,7 @@ def test_synthstrip_output_matches_reference(generated_outputs: dict[str, Path])
 
     voxel_accuracy = float((actual_mask == expected_mask).mean())
     dice = _dice(actual_mask, expected_mask)
-    print(
-        "SynthStrip metrics: "
-        f"voxel_accuracy={voxel_accuracy:.6f}, "
-        f"dice={dice:.6f}"
-    )
+    print(f"SynthStrip metrics: voxel_accuracy={voxel_accuracy:.6f}, dice={dice:.6f}")
 
     assert voxel_accuracy >= BRAIN_MASK_MIN_VOXEL_ACCURACY, (
         f"Brain mask voxel accuracy {voxel_accuracy:.5f} is below "
