@@ -27,10 +27,6 @@ dependencies = [
 
 ]
 
-[project.optional-dependencies]
-test = ["pytest"]
-dev = ["h5py"]
-
 [tool.pytest.ini_options]
 testpaths = ["test"]
 
@@ -57,8 +53,12 @@ extend-exclude = ["dev"]
 synthseg = "brain_segmentation_tools.app:main"
 synthseg-models = "brain_segmentation_tools.convert_models:main"
 
-[tool.setuptools]
-packages = ["brain_segmentation_tools"]
+[tool.setuptools.packages.find]
+include = ["brain_segmentation_tools*"]
 
-[tool.setuptools.package-data]
-brain_segmentation_tools = ["*.json"]
+[dependency-groups]
+dev = [
+    "loguru>=0.7.3",
+    "h5py",
+    "pytest"
+]
