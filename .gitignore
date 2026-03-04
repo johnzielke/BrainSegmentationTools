@@ -12,3 +12,4 @@ __pycache__
 !test/res/*.nii.gz
 *.egg-info
 .venv/
+.vscode/
