@@ -11,3 +11,4 @@ dist/
 __pycache__
 !test/res/*.nii.gz
 *.egg-info
+.venv/
