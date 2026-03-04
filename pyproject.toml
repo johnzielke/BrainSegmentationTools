@@ -23,12 +23,13 @@ dependencies = [
     "cupy-cuda12x",
     "platformdirs",
     "tqdm",
-    "torch"
+    "torch",
 
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["test"]
+testpaths = ["brain_segmentation_tools", "test"]
+
 
 [tool.ruff.lint]
 select = [
