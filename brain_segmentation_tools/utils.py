@@ -1,6 +1,6 @@
 import functools
+import importlib
 import itertools
-import json
 import queue
 import traceback
 from collections.abc import Callable
@@ -13,18 +13,28 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-RESOURCE_PATH = Path(__file__).parent / "res"
-if not RESOURCE_PATH.exists():
-    raise Exception(f"RESOURCE_PATH does not exist: {RESOURCE_PATH}")
+PACKAGE_ROOT = Path(__file__).parent
+
+
+def _version_to_module(version: str) -> str:
+    clean_version = str(version).removeprefix("v")
+    return f"v{clean_version.replace('.', '_')}"
 
 
 @functools.lru_cache
 def load_resource(version, model, category):
-    resource_path = RESOURCE_PATH / "constants" / str(version) / f"{model}.json"
-    if not resource_path.exists():
-        raise Exception(f"resource_path does not exist: {resource_path}")
-    with open(resource_path) as f:
-        return json.load(f)[category]
+    module_version = _version_to_module(version)
+    module_name = f"brain_segmentation_tools.constants.{module_version}.{model}"
+    try:
+        module = importlib.import_module(module_name)
+    except ModuleNotFoundError as e:
+        raise Exception(f"resource module does not exist: {module_name}") from e
+    if not hasattr(module, "RESOURCE"):
+        raise Exception(f"RESOURCE dict missing in module: {module_name}")
+    resource = module.RESOURCE
+    if category not in resource:
+        raise Exception(f"category '{category}' missing in module: {module_name}")
+    return resource[category]
 
 
 @functools.lru_cache
@@ -223,7 +233,7 @@ def get_flip_indices(labels_segmentation, n_neutral_labels):
 
 def get_model_file(model_type: str, version: str, format="h5", model_name="synthseg"):
     version = version.removeprefix("v")
-    return RESOURCE_PATH / "models" / f"{model_name}_{model_type}_{version}.{format}"
+    return PACKAGE_ROOT / "models" / f"{model_name}_{model_type}_{version}.{format}"
 
 
 class ThreadPoolExecutorWithQueueSizeLimit(futures.ThreadPoolExecutor):

@@ -10,7 +10,6 @@ from typing import Any
 import torch
 from platformdirs import user_cache_dir
 
-from brain_segmentation_tools import utils
 from brain_segmentation_tools.unet_pytorch import UNet
 
 
@@ -38,7 +37,6 @@ class ModelManager:
     def __init__(self, *, dev_mode: bool | None = None):
         self.repo_root = Path(__file__).resolve().parent.parent
         self.freesurfer_root = self.repo_root / "dev" / "freesurfer"
-        self.resource_models_root = utils.RESOURCE_PATH / "models"
         cache_root = Path(
             user_cache_dir("brain_segmentation_tools", "brain_segmentation_tools")
         )
@@ -174,9 +172,6 @@ class ModelManager:
             dev_pt = self._dev_pt_path(spec)
             if dev_pt is not None and dev_pt.exists():
                 return dev_pt
-            packaged_pt = self.resource_models_root / spec.pt_filename
-            if packaged_pt.exists():
-                return packaged_pt
             dev_h5 = self._dev_h5_path(spec)
             if allow_h5_in_dev and dev_h5 is not None and dev_h5.exists():
                 return dev_h5

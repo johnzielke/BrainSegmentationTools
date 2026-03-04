@@ -1,4 +1,4 @@
-{
+RESOURCE = {
     "labels": [
         0,
         3,
@@ -54,7 +54,7 @@
         1,
         0,
         3,
-        3
+        3,
     ],
     "names": [
         "background",
@@ -111,6 +111,6 @@
         "general white matter",
         "background",
         "general csf",
-        "general csf"
-    ]
+        "general csf",
+    ],
 }

@@ -1,9 +1,10 @@
-{
+RESOURCE = {
     "labels": [
         0,
         14,
         15,
         16,
+        24,
         0,
         0,
         0,
@@ -53,13 +54,14 @@
         60,
         0,
         43,
-        44
+        44,
     ],
     "names": [
         "background",
         "3rd ventricle",
         "4th ventricle",
         "brain-stem",
+        "csf",
         "background",
         "background",
         "background",
@@ -109,6 +111,6 @@
         "right ventral DC",
         "background",
         "right lateral ventricle",
-        "right inferior lateral ventricle"
-    ]
+        "right inferior lateral ventricle",
+    ],
 }
