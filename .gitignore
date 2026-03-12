@@ -10,6 +10,7 @@ dist/
 *.egg
 __pycache__
 !test/res/*.nii.gz
+!test/res/oracle/*.nii.gz
 *.egg-info
 .venv/
 .vscode/
