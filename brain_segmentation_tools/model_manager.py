@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import os
 import shutil
 import urllib.request
 from dataclasses import dataclass
 from hashlib import sha256
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 from platformdirs import user_cache_dir
 
+from brain_segmentation_tools.qc_model import QCSynthSegRegressor
 from brain_segmentation_tools.unet_pytorch import UNet
 
 
@@ -20,7 +24,7 @@ class ModelSpec:
     version: str
     framework: str
     pt_filename: str
-    download_url: str
+    download_url: str | None
     freesurfer_h5: str | None = None
     freesurfer_pt: str | None = None
     tf_prefix: str | None = None
@@ -34,13 +38,19 @@ class ModelSpec:
 
 
 class ModelManager:
+    MODEL_CACHE_DIR_ENV_VAR = "BRAIN_SEGMENTATION_TOOLS_MODEL_CACHE_DIR"
+
     def __init__(self, *, dev_mode: bool | None = None):
         self.repo_root = Path(__file__).resolve().parent.parent
         self.freesurfer_root = self.repo_root / "dev" / "freesurfer"
-        cache_root = Path(
-            user_cache_dir("brain_segmentation_tools", "brain_segmentation_tools")
-        )
-        self.cache_dir = cache_root / "models"
+        cache_dir_from_env = os.environ.get(self.MODEL_CACHE_DIR_ENV_VAR)
+        if cache_dir_from_env:
+            self.cache_dir = Path(cache_dir_from_env).expanduser()
+        else:
+            cache_root = Path(
+                user_cache_dir("brain_segmentation_tools", "brain_segmentation_tools")
+            )
+            self.cache_dir = cache_root / "models"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.dev_mode = self.freesurfer_root.exists() if dev_mode is None else dev_mode
         self._specs = self._build_specs()
@@ -54,11 +64,11 @@ class ModelManager:
                 version="1.0",
                 framework="synthseg_unet",
                 pt_filename="synthseg_segmentation_1.0.pt",
-                download_url="https://github.com/johnzielke/BrainSegmentationToolsData/releases/download/models-v1/synthseg_segmentation_1.0.6d8944232ceb.pt",
+                download_url="https://github.com/johnzielke/BrainSegmentationToolsData/releases/download/models-v1/synthseg_segmentation_1.0.dc76d54e9f10.pt",
                 freesurfer_h5="mri_synthseg/synthseg_1.0.h5",
                 tf_prefix="unet",
                 labels_model="segmentation",
-                content_hash="6d8944232ceb",
+                content_hash="dc76d54e9f10",
                 unet_kwargs={
                     "nb_features": 24,
                     "in_channels": 1,
@@ -77,11 +87,11 @@ class ModelManager:
                 version="2.0",
                 framework="synthseg_unet",
                 pt_filename="synthseg_segmentation_2.0.pt",
-                download_url="https://github.com/johnzielke/BrainSegmentationToolsData/releases/download/models-v1/synthseg_segmentation_2.0.6271d6360574.pt",
+                download_url="https://github.com/johnzielke/BrainSegmentationToolsData/releases/download/models-v1/synthseg_segmentation_2.0.823fad05ee75.pt",
                 freesurfer_h5="mri_synthseg/synthseg_2.0.h5",
                 tf_prefix="unet",
                 labels_model="segmentation",
-                content_hash="6271d6360574",
+                content_hash="823fad05ee75",
                 unet_kwargs={
                     "nb_features": 24,
                     "in_channels": 1,
@@ -96,15 +106,26 @@ class ModelManager:
             ),
             ModelSpec(
                 model_name="synthseg",
+                model_type="segmentation_robust",
+                version="2.0",
+                framework="synthseg_robust_unet",
+                pt_filename="synthseg_segmentation_robust_2.0.pt",
+                download_url="https://github.com/johnzielke/BrainSegmentationToolsData/releases/download/models-v1/synthseg_segmentation_robust_2.0.bc037d43812d.pt",
+                freesurfer_h5="mri_synthseg/synthseg_robust_2.0.h5",
+                labels_model="segmentation",
+                content_hash="bc037d43812d",
+            ),
+            ModelSpec(
+                model_name="synthseg",
                 model_type="parcellation",
                 version="2.0",
                 framework="synthseg_unet",
                 pt_filename="synthseg_parcellation_2.0.pt",
-                download_url="https://github.com/johnzielke/BrainSegmentationToolsData/releases/download/models-v1/synthseg_parcellation_2.0.1945f2f4e32b.pt",
+                download_url="https://github.com/johnzielke/BrainSegmentationToolsData/releases/download/models-v1/synthseg_parcellation_2.0.a8822f886c5c.pt",
                 freesurfer_h5="mri_synthseg/synthseg_parc_2.0.h5",
                 tf_prefix="unet_parc",
                 labels_model="parcellation",
-                content_hash="1945f2f4e32b",
+                content_hash="a8822f886c5c",
                 unet_kwargs={
                     "nb_features": 24,
                     "in_channels": 3,
@@ -116,6 +137,17 @@ class ModelManager:
                     "nb_conv_per_level": 2,
                     "batch_norm": True,
                 },
+            ),
+            ModelSpec(
+                model_name="synthseg",
+                model_type="qc",
+                version="2.0",
+                framework="synthseg_qc_regressor",
+                pt_filename="synthseg_qc_2.0.pt",
+                download_url="https://github.com/johnzielke/BrainSegmentationToolsData/releases/download/models-v1/synthseg_qc_2.0.ce460ebf1479.pt",
+                freesurfer_h5="mri_synthseg/synthseg_qc_2.0.h5",
+                labels_model="qc",
+                content_hash="ce460ebf1479",
             ),
             ModelSpec(
                 model_name="synthstrip",
@@ -205,16 +237,29 @@ class ModelManager:
         spec = self.get_spec(
             model_name=model_name, model_type=model_type, version=version
         )
-        if spec.framework != "synthseg_unet":
-            raise ValueError(f"{spec.key} is not an h5-backed UNet model")
+        if spec.framework not in {
+            "synthseg_unet",
+            "synthseg_robust_unet",
+            "synthseg_qc_regressor",
+        }:
+            raise ValueError(f"{spec.key} is not an h5-backed model")
         h5_path = self._dev_h5_path(spec)
         if h5_path is None or not h5_path.exists():
             raise FileNotFoundError(f"Missing source h5 for {spec.key}: {h5_path}")
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        self._convert_unet_h5_to_pt(
-            spec=spec, h5_path=h5_path, output_pt_path=output_path
-        )
+        if spec.framework == "synthseg_robust_unet":
+            self._convert_robust_h5_to_pt(
+                spec=spec, h5_path=h5_path, output_pt_path=output_path
+            )
+        elif spec.framework == "synthseg_qc_regressor":
+            self._convert_qc_h5_to_pt(
+                spec=spec, h5_path=h5_path, output_pt_path=output_path
+            )
+        else:
+            self._convert_unet_h5_to_pt(
+                spec=spec, h5_path=h5_path, output_pt_path=output_path
+            )
         return output_path
 
     def _dev_h5_path(self, spec: ModelSpec) -> Path | None:
@@ -236,6 +281,11 @@ class ModelManager:
             if current_hash == spec.content_hash:
                 return pt_path
             pt_path.unlink()
+        if spec.download_url is None:
+            raise RuntimeError(
+                f"No downloadable artifact configured for {spec.key}; "
+                "run in dev_mode with FreeSurfer models available or convert locally."
+            )
         self._download_pt(spec.download_url, pt_path, expected_hash=spec.content_hash)
         return pt_path
 
@@ -286,9 +336,18 @@ class ModelManager:
         if temp_out.exists():
             temp_out.unlink()
         if dev_h5 is not None and dev_h5.exists():
-            self._convert_unet_h5_to_pt(
-                spec=spec, h5_path=dev_h5, output_pt_path=temp_out
-            )
+            if spec.framework == "synthseg_robust_unet":
+                self._convert_robust_h5_to_pt(
+                    spec=spec, h5_path=dev_h5, output_pt_path=temp_out
+                )
+            elif spec.framework == "synthseg_qc_regressor":
+                self._convert_qc_h5_to_pt(
+                    spec=spec, h5_path=dev_h5, output_pt_path=temp_out
+                )
+            else:
+                self._convert_unet_h5_to_pt(
+                    spec=spec, h5_path=dev_h5, output_pt_path=temp_out
+                )
             return temp_out
 
         return self._cached_pt_path(spec)
@@ -307,7 +366,107 @@ class ModelManager:
             {
                 "state_dict": model.state_dict(),
                 "metadata": {
-                    "source": h5_path.as_posix(),
+                    "model_name": spec.model_name,
+                    "model_type": spec.model_type,
+                    "version": spec.version,
+                    "framework": spec.framework,
+                },
+            },
+            output_pt_path,
+        )
+
+    @staticmethod
+    def _convert_robust_h5_to_pt(
+        *, spec: ModelSpec, h5_path: Path, output_pt_path: Path
+    ) -> None:
+        stage1 = UNet(
+            nb_features=24,
+            in_channels=1,
+            nb_levels=5,
+            conv_size=3,
+            nb_labels=5,
+            feat_mult=2,
+            activation="elu",
+            nb_conv_per_level=2,
+            batch_norm=True,
+        )
+        stage1.load_from_tensorflow(h5_path.as_posix(), prefix="unet")
+
+        denoiser = UNet(
+            nb_features=16,
+            in_channels=5,
+            nb_levels=5,
+            conv_size=5,
+            nb_labels=5,
+            feat_mult=2,
+            activation="elu",
+            nb_conv_per_level=2,
+            skip_n_concatenations=2,
+            batch_norm=True,
+        )
+        denoiser.load_from_tensorflow(h5_path.as_posix(), prefix="l2l")
+
+        stage2 = UNet(
+            nb_features=24,
+            in_channels=6,
+            nb_levels=5,
+            conv_size=3,
+            nb_labels=33,
+            feat_mult=2,
+            activation="elu",
+            nb_conv_per_level=2,
+            batch_norm=True,
+        )
+        stage2.load_from_tensorflow(h5_path.as_posix(), prefix="unet2")
+
+        torch.save(
+            {
+                "state_dict": {
+                    "segmentation_model_stage1": stage1.state_dict(),
+                    "segmentation_model_denoiser": denoiser.state_dict(),
+                    "segmentation_model_stage2": stage2.state_dict(),
+                },
+                "metadata": {
+                    "model_name": spec.model_name,
+                    "model_type": spec.model_type,
+                    "version": spec.version,
+                    "framework": spec.framework,
+                },
+            },
+            output_pt_path,
+        )
+
+    @staticmethod
+    def _load_labels(model_type: str, version: str) -> list[int]:
+        module_version = f"v{str(version).replace('.', '_')}"
+        module = import_module(
+            f"brain_segmentation_tools.constants.{module_version}.{model_type}"
+        )
+        return list(module.RESOURCE["labels"])
+
+    @staticmethod
+    def _convert_qc_h5_to_pt(
+        *, spec: ModelSpec, h5_path: Path, output_pt_path: Path
+    ) -> None:
+        labels_segmentation = np.asarray(
+            ModelManager._load_labels("segmentation", spec.version), dtype=np.int32
+        )
+        labels_qc = np.asarray(
+            ModelManager._load_labels("qc", spec.version), dtype=np.int32
+        )
+        labels_segmentation, unique_idx = np.unique(
+            labels_segmentation, return_index=True
+        )
+        labels_qc = labels_qc[unique_idx]
+        model = QCSynthSegRegressor(
+            labels_segmentation=labels_segmentation.tolist(),
+            labels_qc=labels_qc.tolist(),
+        )
+        model.load_from_tensorflow(h5_path.as_posix(), prefix="qc")
+        torch.save(
+            {
+                "state_dict": model.state_dict(),
+                "metadata": {
                     "model_name": spec.model_name,
                     "model_type": spec.model_type,
                     "version": spec.version,

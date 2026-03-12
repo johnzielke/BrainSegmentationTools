@@ -91,6 +91,7 @@ class UNet(nn.Module):
         use_residuals=False,
         final_pred_activation="softmax",
         nb_conv_per_level=1,
+        skip_n_concatenations=0,
         conv_dropout=0,
         batch_norm=None,
     ):
@@ -101,6 +102,7 @@ class UNet(nn.Module):
         self.padding = padding
         self.pool_size = pool_size
         self.nb_conv_per_level = nb_conv_per_level
+        self.skip_n_concatenations = skip_n_concatenations
 
         self.encoder_blocks = nn.ModuleList()
         self.pool_layers = nn.ModuleList()
@@ -131,11 +133,18 @@ class UNet(nn.Module):
 
         self.decoder_blocks = nn.ModuleList()
         self.upsamples = nn.ModuleList()
+        self.decoder_uses_skip_connections: list[bool] = []
 
-        for level in range(nb_levels - 2, -1, -1):
+        for decoder_level, level in enumerate(range(nb_levels - 2, -1, -1)):
             nb_lvl_feats = int(nb_features * feat_mult**level)
+            use_skip_connections = decoder_level < (
+                nb_levels - self.skip_n_concatenations - 1
+            )
+            self.decoder_uses_skip_connections.append(use_skip_connections)
 
-            in_channels = int(nb_features * feat_mult ** (level + 1)) + nb_lvl_feats
+            in_channels = int(nb_features * feat_mult ** (level + 1))
+            if use_skip_connections:
+                in_channels += nb_lvl_feats
             self.upsamples.append(
                 upsample_layer(
                     channels=int(nb_features * feat_mult ** (level + 1)),
@@ -168,15 +177,23 @@ class UNet(nn.Module):
 
         for level in range(self.nb_levels):
             r_val = self.encoder_blocks[level](x)
-            x, before_norm = r_val
+            if isinstance(r_val, tuple):
+                x, before_norm = r_val
+            else:
+                x, before_norm = r_val, r_val
             if level < self.nb_levels - 1:
                 encoder_features.append(before_norm)
                 x = self.pool_layers[level](x)
 
         for level in range(self.nb_levels - 1):
             x = self.upsamples[level](x)
-            x = torch.cat([encoder_features[-level - 1], x], dim=1)
-            x, before_norm = self.decoder_blocks[level](x)
+            if self.decoder_uses_skip_connections[level]:
+                x = torch.cat([encoder_features[-level - 1], x], dim=1)
+            r_val = self.decoder_blocks[level](x)
+            if isinstance(r_val, tuple):
+                x, _ = r_val
+            else:
+                x = r_val
 
         x = self.final_conv(x)
 

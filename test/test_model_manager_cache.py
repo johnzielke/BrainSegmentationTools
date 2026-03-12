@@ -7,6 +7,18 @@ import pytest
 from brain_segmentation_tools.model_manager import ModelManager
 
 
+def test_model_manager_uses_env_cache_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    custom_cache_dir = tmp_path / "custom-model-cache"
+    monkeypatch.setenv(
+        ModelManager.MODEL_CACHE_DIR_ENV_VAR, custom_cache_dir.as_posix()
+    )
+    manager = ModelManager(dev_mode=False)
+    assert manager.cache_dir == custom_cache_dir
+    assert manager.cache_dir.exists()
+
+
 def test_model_download_and_cache_reuse(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -4,6 +4,10 @@ from loguru import logger
 from monai import transforms
 
 
+def clip_ct_intensity(image):
+    return image.clamp(0, 80)
+
+
 class ResampleForPrediction(transforms.Transform):
     def __init__(
         self,
@@ -62,7 +66,7 @@ class ResampleForPrediction(transforms.Transform):
 
 
 def get_pre_transforms(
-    synthseg_divisible_k, device="cpu", synthstrip=False, synthseg=True
+    synthseg_divisible_k, device="cpu", synthstrip=False, synthseg=True, ct=False
 ):
     trans = [
         transforms.LoadImaged(keys=["image"]),  # TODO: Handle multichannel
@@ -84,7 +88,12 @@ def get_pre_transforms(
             transforms.Orientationd(keys=["image"], axcodes="RAS"),
             ResampleForPrediction(key="image", target_pix_dim=(1.0, 1.0, 1.0)),
             # TODO: Crop
-            # TODO: Clip for CT
+        ]
+        if ct:
+            trans += [
+                transforms.Lambdad(keys=["image"], func=clip_ct_intensity),
+            ]
+        trans += [
             transforms.ScaleIntensityRangePercentilesd(
                 keys=["image"], lower=0.5, upper=99.5, b_min=0.0, b_max=1.0
             ),

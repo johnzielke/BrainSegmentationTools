@@ -1,3 +1,4 @@
+import csv
 import os
 import traceback
 from collections.abc import Callable
@@ -38,8 +39,10 @@ class Application:
     flip_indices: np.ndarray = field(init=False)
     n_neutral_labels: int = field(init=False)
     labels_segmentation: np.ndarray = field(init=False)
+    labels_denoiser: np.ndarray = field(init=False)
     labels_parcellation: np.ndarray = field(init=False)
     labels_qc: np.ndarray = field(init=False)
+    names_qc: np.ndarray = field(init=False)
     _synthseg_model: Synthseg = field(init=False, default=None)
     _synthstrip_model: StripModel = field(init=False, default=None)
     model_manager: ModelManager = field(init=False)
@@ -57,6 +60,8 @@ class Application:
 
     def __post_init__(self):
         assert self.version in ["v1.0", "v2.0"]
+        if self.robust and self.version != "v2.0":
+            raise ValueError("robust mode is only available for SynthSeg v2.0")
         if isinstance(self.dtype, str):
             self.dtype = getattr(torch, self.dtype)
         self.model_manager = ModelManager(dev_mode=self.dev_mode)
@@ -73,7 +78,16 @@ class Application:
                 labels_segmentation, return_index=True
             )
             self.flip_indices = None
+        self.labels_denoiser = (
+            utils.get_list_labels("denoiser", self.version)
+            if self.robust
+            else np.asarray([], dtype=np.int32)
+        )
         self.labels_parcellation = utils.get_list_labels("parcellation", self.version)
+        self.labels_qc = utils.get_list_labels("qc", self.version)[unique_idx]
+        self.names_qc = np.asarray(utils.load_resource(self.version, "qc", "names"))[
+            unique_idx
+        ]
         self.topology_classes = np.asarray(
             utils.load_resource(self.version, "topological", "classes")
         )[unique_idx]
@@ -82,9 +96,12 @@ class Application:
     def synthseg_model(self):
         if self._synthseg_model is not None:
             return self._synthseg_model
+        segmentation_model_type = (
+            "segmentation_robust" if self.robust else "segmentation"
+        )
         segmentation_model_file = self.model_manager.get_model_path(
             model_name="synthseg",
-            model_type="segmentation",
+            model_type=segmentation_model_type,
             version=self.version,
             allow_h5_in_dev=True,
         )
@@ -96,17 +113,25 @@ class Application:
                 version=self.version,
                 allow_h5_in_dev=True,
             )
+        qc_model_file = None
+        if self.qc:
+            qc_model_file = self.model_manager.get_model_path(
+                model_name="synthseg",
+                model_type="qc",
+                version=self.version,
+                allow_h5_in_dev=True,
+            )
         self._synthseg_model = Synthseg(
             model_file_segmentation=segmentation_model_file,
             model_file_parcellation=parcellation_model_file,
-            model_file_qc=utils.get_model_file("qc", self.version) if self.qc else None,
+            model_file_qc=qc_model_file,
             labels_segmentation=self.labels_segmentation.tolist(),
-            labels_denoiser=None,
+            labels_denoiser=self.labels_denoiser.tolist() if self.robust else None,
             labels_parcellation=self.labels_parcellation.tolist(),
-            labels_qc=None,
+            labels_qc=self.labels_qc.tolist() if self.qc else None,
             robust=self.robust,
             do_parcellation=self.parcellation,
-            do_qc=self.qc,
+            do_qc=bool(self.qc),
             flip_indices=self.flip_indices,
         )
         self._synthseg_model = self._synthseg_model.to(self.device, dtype=self.dtype)
@@ -157,13 +182,14 @@ class Application:
                 bbox_start[1] : bbox_end[1],
                 bbox_start[2] : bbox_end[2],
             ]
-        segmentation, parcellation = self.synthseg_model(
+        segmentation, parcellation, qc_scores = self.synthseg_model(
             image_tensor.to(self.device, dtype=self.dtype)
         )
 
         results = []
         for i in range(segmentation.shape[0]):
             seg_ = segmentation[i]
+            parc_ = None
             if self.parcellation:
                 parc_ = parcellation[i]
             segmentation_cleaned_posteriors, segmentation_final_labels = (
@@ -196,8 +222,39 @@ class Application:
                 segmentation_final_labels, affine=seg_.affine
             )
             row["segmentation"] = segmentation_final_labels
+            if qc_scores is not None:
+                row["qc_scores"] = qc_scores[i]
             results.append(row)
         return results
+
+    @staticmethod
+    def _subject_id_for_qc(path: str) -> str:
+        name = Path(path).name
+        for suffix in [".nii.gz", ".nii", ".mgz", ".npz"]:
+            if name.endswith(suffix):
+                return name.removesuffix(suffix)
+        return Path(name).stem
+
+    def _qc_headers(self) -> list[str]:
+        _, unique_idx = np.unique(self.labels_qc, return_index=True)
+        return self.names_qc[unique_idx].tolist()[1:]
+
+    def _write_qc_header(self, qc_output_path: Path) -> None:
+        qc_output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(qc_output_path, "w", newline="") as f:
+            csv.writer(f).writerow(["subject", *self._qc_headers()])
+
+    def _append_qc_row(
+        self, *, qc_output_path: Path, input_image_path: str, qc_scores: torch.Tensor
+    ) -> None:
+        scores = np.clip(
+            np.squeeze(qc_scores.detach().float().cpu().numpy())[1:], 0.0, 1.0
+        )
+        row = [self._subject_id_for_qc(input_image_path)] + [
+            f"{score:.4f}" for score in scores
+        ]
+        with open(qc_output_path, "a", newline="") as f:
+            csv.writer(f).writerow(row)
 
     @torch.inference_mode()
     def predict_synthstrip_batch(self, data):
@@ -232,6 +289,15 @@ class Application:
     ):
         do_segmentation = segmentation_out is not None
         do_brain_mask = brain_mask_out is not None
+        do_qc = self.qc is not None
+        qc_output_path = None
+        if do_qc:
+            if not do_segmentation:
+                raise ValueError("qc output requires segmentation_out")
+            qc_output_path = Path(self.qc)
+            if qc_output_path.suffix.lower() != ".csv":
+                qc_output_path = qc_output_path.with_suffix(".csv")
+            self._write_qc_header(qc_output_path)
         if (
             isinstance(input_paths, str)
             and Path(input_paths).is_file()
@@ -343,8 +409,16 @@ class Application:
                     else:
                         extended_brain_mask_out_paths.append(None)
                 else:
-                    extended_segmentation_out_paths.append(Path(segmentation_out_path))
-                    extended_brain_mask_out_paths.append(Path(brain_mask_out_path))
+                    extended_segmentation_out_paths.append(
+                        Path(segmentation_out_path)
+                        if segmentation_out_path is not None
+                        else None
+                    )
+                    extended_brain_mask_out_paths.append(
+                        Path(brain_mask_out_path)
+                        if brain_mask_out_path is not None
+                        else None
+                    )
         input_paths = extended_input_paths
         segmentation_out_paths = extended_segmentation_out_paths
         brain_mask_out_paths = extended_brain_mask_out_paths
@@ -400,6 +474,7 @@ class Application:
             device=self.device,
             synthstrip=do_brain_mask,
             synthseg=do_segmentation,
+            ct=self.ct,
         )
         dataset = utils.ErrorCatchingDataset(
             monai.data.Dataset(
@@ -516,6 +591,14 @@ class Application:
                             filename=output_path,
                         )
                         item_result["synthseg"] = output_path + self.output_extension
+                        if do_qc and qc_output_path is not None:
+                            self._append_qc_row(
+                                qc_output_path=qc_output_path,
+                                input_image_path=input_image_path,
+                                qc_scores=segmentations[i]["qc_scores"],
+                            )
+                            item_result["qc"] = segmentations[i]["qc_scores"]
+                            item_result["qc_output"] = qc_output_path.as_posix()
                 if callback is not None:
                     callback(item_result)
 

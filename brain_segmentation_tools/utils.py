@@ -294,10 +294,19 @@ def predict_with_padding(divisible_by: int, multiple_returns=False):
             ]
             if multiple_returns:
                 if isinstance(out, (list, tuple)):
-                    unpadded_out = [o[tuple(unpad_slices)] for o in out]
+                    unpadded_out = [
+                        o[tuple(unpad_slices)]
+                        # skip qc dict output
+                        if isinstance(o, torch.Tensor) and o.ndim == x.ndim
+                        else o
+                        for o in out
+                    ]
                 elif isinstance(out, dict):
                     unpadded_out = {
-                        k: v[tuple(unpad_slices)] if isinstance(v, torch.Tensor) else v
+                        k: v[tuple(unpad_slices)]
+                        # skip qc dict output
+                        if isinstance(v, torch.Tensor) and v.ndim == x.ndim
+                        else v
                         for k, v in out.items()
                     }
                 else:
