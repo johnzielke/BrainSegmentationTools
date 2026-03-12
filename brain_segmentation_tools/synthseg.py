@@ -29,7 +29,7 @@ class Synthseg(torch.nn.Module):
         robust,
         do_parcellation,
         do_qc,
-        flip_indices: dict[int, int] = None,
+        flip_indices: dict[int, int] | None = None,
     ):
         super().__init__()
 
