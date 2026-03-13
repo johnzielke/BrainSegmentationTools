@@ -2,15 +2,15 @@ import csv
 import os
 import traceback
 from collections.abc import Callable
-from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, cast
 
-import monai
 import numpy as np
 import torch
 from fire import Fire
 from monai import transforms
+from monai.data import Dataset, MetaTensor, ThreadDataLoader
 from monai.transforms.utils import generate_spatial_bounding_box
 from tqdm import tqdm
 
@@ -36,19 +36,19 @@ class Application:
     dev_mode: bool | None = None
     device: str = "cuda"
     synthseg: Synthseg = field(init=False)
-    flip_indices: np.ndarray = field(init=False)
+    flip_indices: dict[int, int] | None = field(init=False)
     n_neutral_labels: int = field(init=False)
     labels_segmentation: np.ndarray = field(init=False)
     labels_denoiser: np.ndarray = field(init=False)
     labels_parcellation: np.ndarray = field(init=False)
     labels_qc: np.ndarray = field(init=False)
     names_qc: np.ndarray = field(init=False)
-    _synthseg_model: Synthseg = field(init=False, default=None)
-    _synthstrip_model: StripModel = field(init=False, default=None)
+    _synthseg_model: Synthseg | None = field(init=False, default=None)
+    _synthstrip_model: StripModel | None = field(init=False, default=None)
     model_manager: ModelManager = field(init=False)
     topology_classes: np.ndarray = field(init=False)
     output_extension: str = ".nii.gz"
-    input_file_extensions: tuple[str] = (".nii", ".nii.gz")
+    input_file_extensions: tuple[str, ...] = (".nii", ".nii.gz")
     dtype: torch.dtype = torch.float32
     skip_existing: bool = False
     no_compile: bool = True
@@ -137,7 +137,7 @@ class Application:
         self._synthseg_model = self._synthseg_model.to(self.device, dtype=self.dtype)
         self._synthseg_model.eval()
         if not self.no_compile:
-            self._synthseg_model = torch.compile(self._synthseg_model)
+            self._synthseg_model = cast(Synthseg, torch.compile(self._synthseg_model))
         return self._synthseg_model
 
     @property
@@ -159,7 +159,9 @@ class Application:
         )
         self._synthstrip_model.eval()
         if not self.no_compile:
-            self._synthstrip_model = torch.compile(self._synthstrip_model)
+            self._synthstrip_model = cast(
+                StripModel, torch.compile(self._synthstrip_model)
+            )
 
         return self._synthstrip_model
 
@@ -217,10 +219,11 @@ class Application:
                 ] = segmentation_final_labels
                 segmentation_final_labels = segmentation_final_labels_
             row = {}
-
-            segmentation_final_labels = monai.data.MetaTensor(
-                segmentation_final_labels, affine=seg_.affine
-            )
+            input_image = image_tensor[i]
+            if isinstance(input_image, MetaTensor):
+                segmentation_final_labels = MetaTensor(
+                    segmentation_final_labels, affine=input_image.affine
+                )
             row["segmentation"] = segmentation_final_labels
             if qc_scores is not None:
                 row["qc_scores"] = qc_scores[i]
@@ -270,7 +273,15 @@ class Application:
                 brain_mask_, border=self.brain_mask_border
             )
             row = {}
-            brain_mask = monai.data.MetaTensor(brain_mask, affine=brain_mask_.affine)
+            source_image_strip = data["image_strip"][i]
+            affine = None
+            if isinstance(source_image_strip, MetaTensor):
+                affine = source_image_strip.affine
+            if isinstance(brain_mask_, MetaTensor):
+                # Preserve the affine after explicit RAS reorientation.
+                affine = brain_mask_.affine
+            if affine is not None:
+                brain_mask = MetaTensor(brain_mask, affine=affine)
             row["brain_mask"] = brain_mask
             results.append(row)
         return results
@@ -283,7 +294,7 @@ class Application:
         segmentation_out: str | list[str] | None = None,
         brain_mask_out: str | list[str] | None = None,
         data_root: str | None = None,
-        callback: Callable[[dict[str, str]], None] | None = None,
+        callback: Callable[[dict[str, object]], None] | None = None,
         ids: list[str] | None = None,
         use_prog_bar: bool = True,
     ):
@@ -294,7 +305,7 @@ class Application:
         if do_qc:
             if not do_segmentation:
                 raise ValueError("qc output requires segmentation_out")
-            qc_output_path = Path(self.qc)
+            qc_output_path = Path(cast(str, self.qc))
             if qc_output_path.suffix.lower() != ".csv":
                 qc_output_path = qc_output_path.with_suffix(".csv")
             self._write_qc_header(qc_output_path)
@@ -305,39 +316,46 @@ class Application:
         ):
             input_paths = list(Path(input_paths).read_text().splitlines())
         input_paths = input_paths if isinstance(input_paths, list) else [input_paths]
+        segmentation_out_items: list[str | None]
+        brain_mask_out_items: list[str | None]
         if data_root is not None:
             if segmentation_out is not None:
                 if not isinstance(segmentation_out, str):
                     raise ValueError(
                         "segmentation_out must be a string if data_root is provided"
                     )
-                segmentation_out = [segmentation_out] * len(input_paths)
+                segmentation_out_items = [cast(str | None, segmentation_out)] * len(
+                    input_paths
+                )
+            else:
+                segmentation_out_items = [None] * len(input_paths)
             if brain_mask_out is not None:
                 if not isinstance(brain_mask_out, str):
                     raise ValueError(
                         "brain_mask_out must be a string if data_root is provided"
                     )
-                brain_mask_out = [brain_mask_out] * len(input_paths)
+                brain_mask_out_items = [cast(str | None, brain_mask_out)] * len(
+                    input_paths
+                )
+            else:
+                brain_mask_out_items = [None] * len(input_paths)
         else:
-            segmentation_out = (
-                segmentation_out
+            segmentation_out_items = (
+                [cast(str | None, path) for path in segmentation_out]
                 if isinstance(segmentation_out, list)
                 else [segmentation_out]
             )
-            brain_mask_out = (
-                brain_mask_out if isinstance(brain_mask_out, list) else [brain_mask_out]
+            brain_mask_out_items = (
+                [cast(str | None, path) for path in brain_mask_out]
+                if isinstance(brain_mask_out, list)
+                else [brain_mask_out]
             )
 
         extended_input_paths = []
         extended_segmentation_out_paths = []
         extended_brain_mask_out_paths = []
-        if brain_mask_out is None:
-            brain_mask_out = [None] * len(input_paths)
-        if segmentation_out is None:
-            segmentation_out = [None] * len(input_paths)
-
         for input_path, brain_mask_out_path, segmentation_out_path in zip(
-            input_paths, brain_mask_out, segmentation_out, strict=False
+            input_paths, brain_mask_out_items, segmentation_out_items, strict=False
         ):
             input_path = Path(input_path)
             if input_path.is_dir():
@@ -477,7 +495,7 @@ class Application:
             ct=self.ct,
         )
         dataset = utils.ErrorCatchingDataset(
-            monai.data.Dataset(
+            Dataset(
                 [
                     {
                         "image": image.as_posix(),
@@ -499,108 +517,106 @@ class Application:
             )
         )
         assert self.BATCH_SIZE == 1, "Batch size must be 1 for the pipeline logic"
-        dataloader = monai.data.ThreadDataLoader(
+        dataloader = ThreadDataLoader(
             dataset, batch_size=self.BATCH_SIZE, use_thread_workers=True, num_workers=4
         )
         saver = transforms.SaveImage(output_ext=self.output_extension, print_log=False)
-        # with utils.ThreadPoolExecutorWithQueueSizeLimit(maxsize=2) as save_executor:
-        with nullcontext(dataloader) if not use_prog_bar else tqdm(dataloader) as t:
-            for data in t:
-                # TODO: Use brain mask to crop segmentation input.
-                if "exception" in data:
-                    print(
-                        f"Skipping {data['image'][0]} "
-                        f"due to exception: {data['exception'][0]}"
+        progress: tqdm[Any] | None = tqdm(dataloader) if use_prog_bar else None
+        data_iterable = progress if progress is not None else dataloader
+        for data in data_iterable:
+            # TODO: Use brain mask to crop segmentation input.
+            if "exception" in data:
+                print(
+                    f"Skipping {data['image'][0]} "
+                    f"due to exception: {data['exception'][0]}"
+                )
+                if callback is not None:
+                    callback(
+                        {
+                            "id": data["id"][0],
+                            "exception": {
+                                "message": str(data["exception"][0]),
+                                "type": type(data["exception"][0]).__name__,
+                            },
+                            "success": False,
+                        }
                     )
-                    if callback is not None:
-                        callback(
-                            {
-                                "id": data["id"][0],
-                                "exception": {
-                                    "message": str(data["exception"][0]),
-                                    "type": type(data["exception"][0]).__name__,
-                                },
-                                "success": False,
-                            }
-                        )
+                continue
+            input_image_path = data["image"][0].meta.get("filename_or_obj")
+            item_result = {
+                "image": input_image_path,
+                "id": data["id"][0],
+                "success": True,
+            }
+            if progress is not None:
+                progress.set_description(str(input_image_path))
+            brain_masks: list[dict[str, Any]] = []
+            if do_brain_mask or self.crop_segmentation_input_to_brain_mask:
+                try:
+                    brain_masks = self.predict_synthstrip_batch(data)
+                except KeyboardInterrupt:
+                    raise
+                except Exception:
+                    print(f"Error during prediction for {input_image_path}:")
+                    traceback.print_exc()
                     continue
-                input_image_path = data["image"][0].meta.get("filename_or_obj")
-                item_result = {
-                    "image": input_image_path,
-                    "id": data["id"][0],
-                    "success": True,
-                }
-                if use_prog_bar:
-                    t.set_description(input_image_path)
-                brain_masks = None
-                if do_brain_mask or self.crop_segmentation_input_to_brain_mask:
-                    try:
-                        brain_masks = self.predict_synthstrip_batch(data)
-                    except KeyboardInterrupt:
-                        raise
-                    except Exception:
-                        print(f"Error during prediction for {input_image_path}:")
-                        traceback.print_exc()
-                        continue
-                    if do_brain_mask:
-                        for i in range(len(brain_masks)):
-                            brain_mask_output_path = (
-                                data["brain_mask_output"][i]
-                                .removesuffix(".nii")
-                                .removesuffix(".nii.gz")
-                            )
-                            Path(brain_mask_output_path).parent.mkdir(
-                                parents=True, exist_ok=True
-                            )
-                            saver(
-                                brain_masks[i]["brain_mask"][None].cpu(),
-                                filename=brain_mask_output_path,
-                            )
-                            item_result["synthstrip"] = (
-                                brain_mask_output_path + self.output_extension
-                            )
-
-                if do_segmentation:
-                    try:
-                        synthseg_input = data["image"]
-                        brain_mask = None
-                        if self.crop_segmentation_input_to_brain_mask:
-                            assert (len(brain_masks)) == 1, (
-                                "Batch size must be 1 when cropping to brain mask"
-                            )
-                            brain_mask = brain_masks[0]["brain_mask"]
-                        segmentations = self.predict_synthseg_batch(
-                            synthseg_input, brain_mask=brain_mask
-                        )
-                        del synthseg_input
-                    except KeyboardInterrupt:
-                        raise
-                    except Exception:
-                        print(f"Error during prediction for {input_image_path}:")
-                        traceback.print_exc()
-                        continue
-                    for i in range(len(segmentations)):
-                        output_path = (
-                            data["output"][i]
+                if do_brain_mask:
+                    for i in range(len(brain_masks)):
+                        brain_mask_output_path = (
+                            data["brain_mask_output"][i]
                             .removesuffix(".nii")
                             .removesuffix(".nii.gz")
                         )
-                        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-                        saver(
-                            segmentations[i]["segmentation"][None].cpu(),
-                            filename=output_path,
+                        Path(brain_mask_output_path).parent.mkdir(
+                            parents=True, exist_ok=True
                         )
-                        item_result["synthseg"] = output_path + self.output_extension
-                        if do_qc and qc_output_path is not None:
-                            self._append_qc_row(
-                                qc_output_path=qc_output_path,
-                                input_image_path=input_image_path,
-                                qc_scores=segmentations[i]["qc_scores"],
-                            )
-                            item_result["qc"] = segmentations[i]["qc_scores"]
-                            item_result["qc_output"] = qc_output_path.as_posix()
-                if callback is not None:
-                    callback(item_result)
+                        saver(
+                            brain_masks[i]["brain_mask"][None].cpu(),
+                            filename=brain_mask_output_path,
+                        )
+                        item_result["synthstrip"] = (
+                            brain_mask_output_path + self.output_extension
+                        )
+
+            if do_segmentation:
+                try:
+                    synthseg_input = data["image"]
+                    brain_mask = None
+                    if self.crop_segmentation_input_to_brain_mask:
+                        assert len(brain_masks) == 1, (
+                            "Batch size must be 1 when cropping to brain mask"
+                        )
+                        brain_mask = brain_masks[0]["brain_mask"]
+                    segmentations = self.predict_synthseg_batch(
+                        synthseg_input, brain_mask=brain_mask
+                    )
+                    del synthseg_input
+                except KeyboardInterrupt:
+                    raise
+                except Exception:
+                    print(f"Error during prediction for {input_image_path}:")
+                    traceback.print_exc()
+                    continue
+                for i in range(len(segmentations)):
+                    output_path = (
+                        data["output"][i].removesuffix(".nii").removesuffix(".nii.gz")
+                    )
+                    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+                    saver(
+                        segmentations[i]["segmentation"][None].cpu(),
+                        filename=output_path,
+                    )
+                    item_result["synthseg"] = output_path + self.output_extension
+                    if do_qc and qc_output_path is not None:
+                        self._append_qc_row(
+                            qc_output_path=qc_output_path,
+                            input_image_path=input_image_path,
+                            qc_scores=segmentations[i]["qc_scores"],
+                        )
+                        item_result["qc"] = segmentations[i]["qc_scores"]
+                        item_result["qc_output"] = qc_output_path.as_posix()
+            if callback is not None:
+                callback(item_result)
 
 
 def main():
@@ -613,5 +629,5 @@ if __name__ == "__main__":
     app = Application(parcellation=True)
     app.run(
         input_paths=example_file.as_posix(),
-        segmentation_out_paths=output_file.as_posix(),
+        segmentation_out=output_file.as_posix(),
     )

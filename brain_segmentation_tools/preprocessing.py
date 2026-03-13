@@ -1,7 +1,7 @@
-import monai
 import torch
 from loguru import logger
 from monai import transforms
+from monai.data import MetaTensor
 
 
 def clip_ct_intensity(image):
@@ -18,7 +18,8 @@ class ResampleForPrediction(transforms.Transform):
         align_corners=False,
     ):
         self.key = key
-        self.target_pix_dim = torch.tensor(target_pix_dim)
+        self.target_pix_dim = tuple(float(v) for v in target_pix_dim)
+        self.target_pix_dim_tensor = torch.tensor(self.target_pix_dim)
         self.pix_dim_tolerance = pix_dim_tolerance
         self.mode = mode
         self.align_corners = align_corners
@@ -29,10 +30,9 @@ class ResampleForPrediction(transforms.Transform):
     def __call__(self, data):
         data = dict(data)
         img = data[self.key]
-        if not isinstance(img, monai.data.MetaTensor):
+        if not isinstance(img, MetaTensor):
             raise TypeError(
-                f"Expected {self.key} to be of type monai.data.MetaTensor, "
-                f"got {type(img)}"
+                f"Expected {self.key} to be of type MetaTensor, got {type(img)}"
             )
         if not img.ndim == 4:
             raise ValueError(
@@ -54,13 +54,17 @@ class ResampleForPrediction(transforms.Transform):
             raise ValueError(
                 f"Expected {self.key} to have sizes > 1, got {img.shape[1:]}"
             )
-        pixdim = torch.sqrt(torch.sum(img.affine * img.affine, axis=0))[:-1]
-        if torch.any(torch.abs(pixdim - self.target_pix_dim) > self.pix_dim_tolerance):
-            factor = pixdim / self.target_pix_dim
+        pixdim = torch.linalg.norm(img.affine[:3, :3], dim=0)
+        if torch.any(
+            torch.abs(pixdim - self.target_pix_dim_tensor) > self.pix_dim_tolerance
+        ):
+            factor = pixdim / self.target_pix_dim_tensor
             sigmas = 0.25 / factor
             sigmas[factor > 1] = 0  # don't blur if upsampling
             if torch.any(sigmas > 0):
-                img = transforms.GaussianSmooth(sigma=sigmas)(img)
+                img = transforms.GaussianSmooth(
+                    sigma=[float(s) for s in sigmas.tolist()]
+                )(img)
             data[self.key] = self.spacing_transform(img)
         return data
 
@@ -68,36 +72,46 @@ class ResampleForPrediction(transforms.Transform):
 def get_pre_transforms(
     synthseg_divisible_k, device="cpu", synthstrip=False, synthseg=True, ct=False
 ):
-    trans = [
+    trans: list[transforms.Transform] = [
         transforms.LoadImaged(keys=["image"]),  # TODO: Handle multichannel
         transforms.EnsureChannelFirstd(keys=["image"]),
         transforms.ToDeviced(keys=["image"], device=device),
     ]
     if synthstrip:
-        trans += [
-            transforms.CopyItemsd(keys=["image"], names=["image_strip"]),
-            transforms.Orientationd(keys=["image_strip"], axcodes="LIA"),
-            ResampleForPrediction(key="image_strip", target_pix_dim=(1.0, 1.0, 1.0)),
-            transforms.ScaleIntensityRangePercentilesd(
-                keys=["image_strip"], lower=0, upper=99, b_min=0.0, b_max=1.0
-            ),
-            # transforms.DivisiblePadd(keys=["image_strip"], k=64),
-        ]
-    if synthseg:
-        trans += [
-            transforms.Orientationd(keys=["image"], axcodes="RAS"),
-            ResampleForPrediction(key="image", target_pix_dim=(1.0, 1.0, 1.0)),
-            # TODO: Crop
-        ]
-        if ct:
-            trans += [
-                transforms.Lambdad(keys=["image"], func=clip_ct_intensity),
+        trans.extend(
+            [
+                transforms.CopyItemsd(keys=["image"], names=["image_strip"]),
+                transforms.Orientationd(keys=["image_strip"], axcodes="LIA"),
+                ResampleForPrediction(
+                    key="image_strip", target_pix_dim=(1.0, 1.0, 1.0)
+                ),
+                transforms.ScaleIntensityRangePercentilesd(
+                    keys=["image_strip"], lower=0, upper=99, b_min=0.0, b_max=1.0
+                ),
+                # transforms.DivisiblePadd(keys=["image_strip"], k=64),
             ]
-        trans += [
-            transforms.ScaleIntensityRangePercentilesd(
-                keys=["image"], lower=0.5, upper=99.5, b_min=0.0, b_max=1.0
-            ),
-            # transforms.DivisiblePadd(keys=["image"], k=synthseg_divisible_k),
-        ]
+        )
+    if synthseg:
+        trans.extend(
+            [
+                transforms.Orientationd(keys=["image"], axcodes="RAS"),
+                ResampleForPrediction(key="image", target_pix_dim=(1.0, 1.0, 1.0)),
+                # TODO: Crop
+            ]
+        )
+        if ct:
+            trans.extend(
+                [
+                    transforms.Lambdad(keys=["image"], func=clip_ct_intensity),
+                ]
+            )
+        trans.extend(
+            [
+                transforms.ScaleIntensityRangePercentilesd(
+                    keys=["image"], lower=0.5, upper=99.5, b_min=0.0, b_max=1.0
+                ),
+                # transforms.DivisiblePadd(keys=["image"], k=synthseg_divisible_k),
+            ]
+        )
 
     return transforms.Compose(trans)

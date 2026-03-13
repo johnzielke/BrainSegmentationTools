@@ -50,6 +50,9 @@ select = [
 [tool.ruff]
 extend-exclude = ["dev"]
 
+[tool.ty.src]
+exclude = ["dev/freesurfer"]
+
 [project.scripts]
 synthseg = "brain_segmentation_tools.app:main"
 synthseg-models = "brain_segmentation_tools.convert_models:main"
@@ -61,5 +64,6 @@ include = ["brain_segmentation_tools*"]
 dev = [
     "loguru>=0.7.3",
     "h5py",
-    "pytest"
+    "pytest",
+    "ty"
 ]

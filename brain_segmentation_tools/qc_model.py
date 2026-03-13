@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from typing import cast
 
 import numpy as np
 import torch
@@ -131,8 +132,10 @@ class QCSynthSegRegressor(nn.Module):
     ) -> torch.Tensor:
         seg_idx = torch.argmax(segmentation, dim=1)
         seg_idx = self._make_shape(seg_idx)
-        seg_labels = self.seg_idx_to_label[seg_idx]
-        qc_labels = self.seg_label_to_qc_label[seg_labels]
+        seg_idx_to_label = cast(torch.Tensor, self.seg_idx_to_label)
+        seg_label_to_qc_label = cast(torch.Tensor, self.seg_label_to_qc_label)
+        seg_labels = seg_idx_to_label[seg_idx]
+        qc_labels = seg_label_to_qc_label[seg_labels]
         qc_input = F.one_hot(qc_labels, num_classes=self.n_labels_qc).permute(
             0, 4, 1, 2, 3
         )

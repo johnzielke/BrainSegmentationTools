@@ -4,6 +4,7 @@ import numpy as np
 import torch
 from cucim.skimage.measure import label as cucim_label
 from monai import transforms
+from monai.transforms.utils import generate_spatial_bounding_box, reset_ops_id
 
 # from cucim.skimage.morphology import binary_closing
 from skimage.morphology import binary_closing
@@ -15,7 +16,7 @@ def undo_padding(tensor, n_levels=5):
         tensor.affine = tensor.affine[0]
     padd = transforms.DivisiblePad(k=2**n_levels)
     # tensor.applied_operations = [tensor.applied_operations[-1]]
-    monai.transforms.utils.reset_ops_id(tensor)
+    reset_ops_id(tensor)
 
     tensor = padd.inverse(tensor)
 
@@ -68,7 +69,7 @@ def post_process_brain_mask(segmentation: torch.Tensor, border: int = 1):
 
 def clean_and_combine_segmentations(
     segmentation: torch.Tensor,
-    parcellation: torch.Tensor,
+    parcellation: torch.Tensor | None,
     topology_classes: np.ndarray,
     labels_segmentation,
     labels_parcellation,
@@ -87,10 +88,9 @@ def clean_and_combine_segmentations(
             )
         mask = get_largest_connected_component(mask)
         segmentation[1:] *= mask[None]
-        bounding_box_start, bounding_box_end = (
-            monai.transforms.utils.generate_spatial_bounding_box(
-                monai.utils.convert_to_tensor(mask[None]), allow_smaller=True
-            )
+        bounding_box_start, bounding_box_end = generate_spatial_bounding_box(
+            monai.utils.convert_to_tensor(mask[None]),
+            allow_smaller=True,
         )
         # print(bounding_box_start,bounding_box_end)
         do_crop = False
@@ -119,7 +119,7 @@ def clean_and_combine_segmentations(
                 segmentation[idx] *= tmp_mask
         segmentation /= segmentation.sum(axis=0)[None]
         segmentation_argmax = monai.utils.convert_to_cupy(
-            labels_segmentation, dtype=cp.int16
+            labels_segmentation, dtype=np.dtype(np.int16)
         )[segmentation.argmax(axis=0, dtype=cp.int8)]
         if parcellation is not None:
             parcellation = monai.utils.convert_to_cupy(parcellation)
@@ -133,7 +133,7 @@ def clean_and_combine_segmentations(
             mask = (segmentation_argmax == 3) | (segmentation_argmax == 42)
             parcellation[0] = ~mask
             parc_patch = monai.utils.convert_to_cupy(
-                labels_parcellation, dtype=cp.int16
+                labels_parcellation, dtype=np.dtype(np.int16)
             )[parcellation.argmax(axis=0, dtype=cp.int8)]
             segmentation_argmax[mask] = parc_patch[mask]
         segmentation_argmax = monai.utils.convert_to_tensor(segmentation_argmax)

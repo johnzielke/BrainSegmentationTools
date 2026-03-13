@@ -34,6 +34,4 @@ pre-commit: pre-commit-available
 pre-commit-all: pre-commit-available
     pre-commit run -a
 
-
-
-qc: pre-commit test
+qc: pre-commit-all test

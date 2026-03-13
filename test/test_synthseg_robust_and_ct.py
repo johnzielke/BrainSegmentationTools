@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import shutil
 from pathlib import Path
+from types import MethodType
+from typing import Any, cast
 
 import nibabel as nib
 import numpy as np
@@ -28,7 +30,7 @@ def _find_model(pattern: str) -> Path | None:
 
 
 def _load_nifti(path: Path) -> tuple[np.ndarray, np.ndarray]:
-    image = nib.load(path.as_posix())
+    image = cast(nib.Nifti1Image, nib.load(path.as_posix()))
     data = np.asanyarray(image.dataobj)
     return data, image.affine
 
@@ -144,8 +146,14 @@ def test_synthseg_matches_oracle_for_robust_and_parcellation_combos(
     )
 
     def _local_model_path(
-        *, model_name: str, model_type: str, version: str, allow_h5_in_dev: bool = True
+        self,
+        *,
+        model_name: str,
+        model_type: str,
+        version: str,
+        allow_h5_in_dev: bool = True,
     ) -> Path:
+        del self, allow_h5_in_dev
         clean_version = str(version).removeprefix("v")
         if (
             model_name == "synthseg"
@@ -171,7 +179,9 @@ def test_synthseg_matches_oracle_for_robust_and_parcellation_combos(
             f"No local model mapping for {model_name}:{model_type}:{clean_version}"
         )
 
-    app.model_manager.get_model_path = _local_model_path
+    cast(Any, app.model_manager).get_model_path = MethodType(
+        _local_model_path, app.model_manager
+    )
 
     output_path = tmp_path / f"synthseg_robust_{robust}_parc_{parcellation}.nii.gz"
     qc_output_path = tmp_path / f"synthseg_robust_{robust}_parc_{parcellation}_qc.csv"

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from types import MethodType
+from typing import Any, cast
 
 import nibabel as nib
 import numpy as np
@@ -44,7 +46,7 @@ def _copy_required_models(cache_dir: Path) -> None:
 
 
 def _load_nifti(path: Path) -> tuple[np.ndarray, np.ndarray]:
-    image = nib.load(path.as_posix())
+    image = cast(nib.Nifti1Image, nib.load(path.as_posix()))
     data = np.asanyarray(image.dataobj)
     return data, image.affine
 
@@ -91,8 +93,14 @@ def generated_outputs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Pat
     local_synthstrip_model = model_cache_dir / "synthstrip_normal_1.pt"
 
     def _local_model_path(
-        *, model_name: str, model_type: str, version: str, allow_h5_in_dev: bool = True
+        self,
+        *,
+        model_name: str,
+        model_type: str,
+        version: str,
+        allow_h5_in_dev: bool = True,
     ) -> Path:
+        del self, allow_h5_in_dev
         clean_version = str(version).removeprefix("v")
         if (
             model_name == "synthseg"
@@ -116,7 +124,9 @@ def generated_outputs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Pat
             f"No local model mapping for {model_name}:{model_type}:{clean_version}"
         )
 
-    app.model_manager.get_model_path = _local_model_path
+    cast(Any, app.model_manager).get_model_path = MethodType(
+        _local_model_path, app.model_manager
+    )
 
     app.run(
         input_paths=(TEST_RES_DIR / "spgr_unstrip.nii.gz").as_posix(),

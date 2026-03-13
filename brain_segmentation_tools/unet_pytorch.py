@@ -228,7 +228,7 @@ class UNet(nn.Module):
                 state_dict[key] = value
 
         for level in range(self.nb_levels):
-            for conv_idx, _conv_block in enumerate(self.encoder_blocks[level]):
+            for conv_idx in range(self.nb_conv_per_level):
                 layer_prefix = (
                     f"{prefix}_conv_downarm_{level}_{conv_idx}/"
                     f"{prefix}_conv_downarm_{level}_{conv_idx}"
@@ -264,7 +264,7 @@ class UNet(nn.Module):
                         )
 
         for level in range(self.nb_levels - 1):
-            for conv_idx, _conv_block in enumerate(self.decoder_blocks[level]):
+            for conv_idx in range(self.nb_conv_per_level):
                 decoder_level = self.nb_levels + level
                 layer_prefix = (
                     f"{prefix}_conv_uparm_{decoder_level}_{conv_idx}/"

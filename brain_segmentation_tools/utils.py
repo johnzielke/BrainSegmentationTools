@@ -1,17 +1,17 @@
 import functools
 import importlib
 import itertools
-import queue
+import threading
 import traceback
 from collections.abc import Callable
 from concurrent import futures
 from functools import wraps
 from pathlib import Path
 
-import monai
 import numpy as np
 import torch
 import torch.nn.functional as F
+from monai.data import Dataset, MetaTensor
 
 PACKAGE_ROOT = Path(__file__).parent
 
@@ -239,10 +239,20 @@ def get_model_file(model_type: str, version: str, format="h5", model_name="synth
 class ThreadPoolExecutorWithQueueSizeLimit(futures.ThreadPoolExecutor):
     def __init__(self, maxsize=50, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._work_queue = queue.Queue(maxsize=maxsize)
+        self._submit_semaphore = threading.Semaphore(value=maxsize)
+
+    def submit(self, fn, /, *args, **kwargs):
+        self._submit_semaphore.acquire()
+        future = super().submit(fn, *args, **kwargs)
+
+        def _release(_future):
+            self._submit_semaphore.release()
+
+        future.add_done_callback(_release)
+        return future
 
 
-class ErrorCatchingDataset(monai.data.Dataset):
+class ErrorCatchingDataset(Dataset):
     def __init__(self, dataset):
         self.dataset = dataset
 
@@ -266,9 +276,11 @@ class ErrorCatchingDataset(monai.data.Dataset):
 
 
 def convert_to_meta_tensor(
-    data: torch.Tensor, *, copy_meta_from: monai.data.MetaTensor = None
-) -> monai.data.MetaTensor:
-    return monai.data.MetaTensor(
+    data: torch.Tensor, *, copy_meta_from: MetaTensor | None = None
+) -> MetaTensor:
+    if copy_meta_from is None:
+        return MetaTensor(data)
+    return MetaTensor(
         data,
         affine=copy_meta_from.affine,
         meta=copy_meta_from.meta,
