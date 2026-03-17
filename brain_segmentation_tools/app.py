@@ -144,15 +144,13 @@ class Application:
     def synthstrip_model(self):
         if self._synthstrip_model is not None:
             return self._synthstrip_model
-        synthstrip_model_file = self.model_manager.get_model_path(
-            model_name="synthstrip",
-            model_type="nocsf" if self.brain_mask_exclude_csf else "normal",
-            version="1",
-            allow_h5_in_dev=False,
-        )
         self._synthstrip_model = StripModel()
         self._synthstrip_model.load_state_dict(
-            torch.load(synthstrip_model_file, weights_only=True)
+            self.model_manager.get_model_state_dict(
+                model_name="synthstrip",
+                model_type="nocsf" if self.brain_mask_exclude_csf else "normal",
+                version="1",
+            )
         )
         self._synthstrip_model = self._synthstrip_model.to(
             self.device, dtype=self.dtype

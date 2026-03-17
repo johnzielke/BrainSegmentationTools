@@ -155,9 +155,9 @@ class ModelManager:
                 version="1",
                 framework="torch_state_dict",
                 pt_filename="synthstrip_normal_1.pt",
-                download_url="https://github.com/johnzielke/BrainSegmentationToolsData/releases/download/models-v1/synthstrip_normal_1.37417f802196.pt",
+                download_url="https://github.com/johnzielke/BrainSegmentationToolsData/releases/download/models-v1/synthstrip_normal_1.7aa3f5db738c.pt",
                 freesurfer_pt="mri_synthstrip/synthstrip.1.pt",
-                content_hash="37417f802196",
+                content_hash="7aa3f5db738c",
             ),
             ModelSpec(
                 model_name="synthstrip",
@@ -165,9 +165,9 @@ class ModelManager:
                 version="1",
                 framework="torch_state_dict",
                 pt_filename="synthstrip_nocsf_1.pt",
-                download_url="https://github.com/johnzielke/BrainSegmentationToolsData/releases/download/models-v1/synthstrip_nocsf_1.62bf01137c45.pt",
+                download_url="https://github.com/johnzielke/BrainSegmentationToolsData/releases/download/models-v1/synthstrip_nocsf_1.805a73fdceb1.pt",
                 freesurfer_pt="mri_synthstrip/synthstrip.nocsf.1.pt",
-                content_hash="62bf01137c45",
+                content_hash="805a73fdceb1",
             ),
         ]
 
@@ -209,6 +209,22 @@ class ModelManager:
                 return dev_h5
 
         return self._cached_pt_path(spec)
+
+    def get_model_state_dict(
+        self,
+        *,
+        model_name: str,
+        model_type: str,
+        version: str,
+    ) -> Any:
+        model_path = self.get_model_path(
+            model_name=model_name,
+            model_type=model_type,
+            version=version,
+            allow_h5_in_dev=False,
+        )
+        checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+        return self._extract_state_dict(checkpoint)
 
     def save_all_converted(self, output_dir: str | Path) -> dict[str, Path]:
         output_dir = Path(output_dir)
@@ -326,7 +342,14 @@ class ModelManager:
             temp_out.parent.mkdir(parents=True, exist_ok=True)
             if temp_out.exists():
                 temp_out.unlink()
-            shutil.copy2(source_pt, temp_out)
+            checkpoint = torch.load(source_pt, map_location="cpu", weights_only=False)
+            torch.save(
+                {
+                    "state_dict": self._extract_state_dict(checkpoint),
+                    "metadata": self._checkpoint_metadata(spec),
+                },
+                temp_out,
+            )
             temp_out.chmod(0o644)
             return temp_out
 
@@ -365,12 +388,7 @@ class ModelManager:
         torch.save(
             {
                 "state_dict": model.state_dict(),
-                "metadata": {
-                    "model_name": spec.model_name,
-                    "model_type": spec.model_type,
-                    "version": spec.version,
-                    "framework": spec.framework,
-                },
+                "metadata": ModelManager._checkpoint_metadata(spec),
             },
             output_pt_path,
         )
@@ -426,12 +444,7 @@ class ModelManager:
                     "segmentation_model_denoiser": denoiser.state_dict(),
                     "segmentation_model_stage2": stage2.state_dict(),
                 },
-                "metadata": {
-                    "model_name": spec.model_name,
-                    "model_type": spec.model_type,
-                    "version": spec.version,
-                    "framework": spec.framework,
-                },
+                "metadata": ModelManager._checkpoint_metadata(spec),
             },
             output_pt_path,
         )
@@ -466,12 +479,54 @@ class ModelManager:
         torch.save(
             {
                 "state_dict": model.state_dict(),
-                "metadata": {
-                    "model_name": spec.model_name,
-                    "model_type": spec.model_type,
-                    "version": spec.version,
-                    "framework": spec.framework,
-                },
+                "metadata": ModelManager._checkpoint_metadata(spec),
             },
             output_pt_path,
         )
+
+    @staticmethod
+    def _checkpoint_metadata(spec: ModelSpec) -> dict[str, str]:
+        return {
+            "model_name": spec.model_name,
+            "model_type": spec.model_type,
+            "version": spec.version,
+            "framework": spec.framework,
+        }
+
+    @staticmethod
+    def _extract_state_dict(checkpoint: Any) -> Any:
+        if not isinstance(checkpoint, dict):
+            raise TypeError(
+                "Expected checkpoint to be a dict or state_dict mapping, "
+                f"got {type(checkpoint).__name__}"
+            )
+
+        for key in ("state_dict", "model_state_dict"):
+            if key in checkpoint:
+                return checkpoint[key]
+
+        if ModelManager._looks_like_state_dict(checkpoint):
+            return checkpoint
+
+        raise KeyError(
+            "Checkpoint does not contain a recognized state dict. "
+            "Expected 'state_dict', 'model_state_dict', or a raw state dict mapping."
+        )
+
+    @staticmethod
+    def _looks_like_state_dict(candidate: Any) -> bool:
+        if not isinstance(candidate, dict) or not candidate:
+            return False
+
+        return all(
+            isinstance(value, torch.Tensor)
+            or ModelManager._looks_like_nested_state_dict(value)
+            for value in candidate.values()
+        )
+
+    @staticmethod
+    def _looks_like_nested_state_dict(candidate: Any) -> bool:
+        if not isinstance(candidate, dict) or not candidate:
+            return False
+
+        return all(isinstance(value, torch.Tensor) for value in candidate.values())
