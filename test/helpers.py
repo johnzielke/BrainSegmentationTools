@@ -95,7 +95,22 @@ def patch_single_worker_dataloader(monkeypatch) -> None:
 
 
 def preferred_test_device() -> str:
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        return "cuda"
+    else:
+        import os
+
+        MAX_DEFAULT_THREADS = 64
+        print(
+            f"CUDA not available, using CPU with up to {MAX_DEFAULT_THREADS} threads or cpu limit."
+            "Change the TORCH_NUM_THREADS environment variable to set a different limit. "
+            f" Detected {os.cpu_count()} cores, torch using {torch.get_num_threads()}."
+        )
+        TORCH_NUM_THREADS = os.environ.get("TORCH_NUM_THREADS", MAX_DEFAULT_THREADS)
+        num_cores = min(os.cpu_count() or 1, int(TORCH_NUM_THREADS))
+        torch.set_num_threads(num_cores)
+
+        return "cpu"
 
 
 def _find_converted_model(spec: ModelSpec) -> Path | None:
