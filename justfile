@@ -1,9 +1,24 @@
 #Just (similar to Makefile), install from https://github.com/casey/just#installation
 
-# Run the full test suite.
+# Run the default test suite. Slow tests are skipped unless `--runslow` is passed.
 test:
     mkdir -p build/model_cache
     BRAIN_SEGMENTATION_TOOLS_MODEL_CACHE_DIR=build/model_cache uv run pytest
+
+# Run the slow dtype/compile support integration matrix.
+test-slow:
+    mkdir -p build/model_cache
+    BRAIN_SEGMENTATION_TOOLS_MODEL_CACHE_DIR=build/model_cache uv run pytest --runslow test/test_optional_synthseg_integration_matrix.py
+
+test-slow-benchmark:
+    mkdir -p build/model_cache
+    BENCHMARK_RUN_OPTIONS=true BRAIN_SEGMENTATION_TOOLS_MODEL_CACHE_DIR=build/model_cache uv run pytest --runslow test/test_optional_synthseg_integration_matrix.py
+
+
+# Run all tests, including slow ones.
+test-all:
+    mkdir -p build/model_cache
+    BRAIN_SEGMENTATION_TOOLS_MODEL_CACHE_DIR=build/model_cache uv run pytest --runslow
 
 # Generate converted model artifacts under build/converted_models.
 convert-models:
