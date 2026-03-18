@@ -70,35 +70,25 @@ class Application:
 
         labels_segmentation = utils.get_list_labels("segmentation", self.version)
         if (not self.fast) & (not self.robust):
-            self.labels_segmentation, self.flip_indices, unique_idx = (
-                utils.get_flip_indices(labels_segmentation, self.n_neutral_labels)
+            self.labels_segmentation, self.flip_indices, unique_idx = utils.get_flip_indices(
+                labels_segmentation, self.n_neutral_labels
             )
         else:
-            self.labels_segmentation, unique_idx = np.unique(
-                labels_segmentation, return_index=True
-            )
+            self.labels_segmentation, unique_idx = np.unique(labels_segmentation, return_index=True)
             self.flip_indices = None
         self.labels_denoiser = (
-            utils.get_list_labels("denoiser", self.version)
-            if self.robust
-            else np.asarray([], dtype=np.int32)
+            utils.get_list_labels("denoiser", self.version) if self.robust else np.asarray([], dtype=np.int32)
         )
         self.labels_parcellation = utils.get_list_labels("parcellation", self.version)
         self.labels_qc = utils.get_list_labels("qc", self.version)[unique_idx]
-        self.names_qc = np.asarray(utils.load_resource(self.version, "qc", "names"))[
-            unique_idx
-        ]
-        self.topology_classes = np.asarray(
-            utils.load_resource(self.version, "topological", "classes")
-        )[unique_idx]
+        self.names_qc = np.asarray(utils.load_resource(self.version, "qc", "names"))[unique_idx]
+        self.topology_classes = np.asarray(utils.load_resource(self.version, "topological", "classes"))[unique_idx]
 
     @property
     def synthseg_model(self):
         if self._synthseg_model is not None:
             return self._synthseg_model
-        segmentation_model_type = (
-            "segmentation_robust" if self.robust else "segmentation"
-        )
+        segmentation_model_type = "segmentation_robust" if self.robust else "segmentation"
         segmentation_model_file = self.model_manager.get_model_path(
             model_name="synthseg",
             model_type=segmentation_model_type,
@@ -152,16 +142,37 @@ class Application:
                 version="1",
             )
         )
-        self._synthstrip_model = self._synthstrip_model.to(
-            self.device, dtype=self.dtype
-        )
+        self._synthstrip_model = self._synthstrip_model.to(self.device, dtype=self.dtype)
         self._synthstrip_model.eval()
         if not self.no_compile:
-            self._synthstrip_model = cast(
-                StripModel, torch.compile(self._synthstrip_model)
-            )
+            self._synthstrip_model = cast(StripModel, torch.compile(self._synthstrip_model))
 
         return self._synthstrip_model
+
+    def _empty_synthseg_results(self, image_tensor):
+        qc_scores = None
+        if self.qc:
+            qc_scores = torch.zeros(
+                int(np.max(self.labels_qc)) + 1,
+                dtype=torch.float32,
+                device=image_tensor.device,
+            )
+
+        results = []
+        for i in range(image_tensor.shape[0]):
+            segmentation_final_labels = torch.zeros(
+                image_tensor.shape[2:],
+                dtype=torch.int32,
+                device=image_tensor.device,
+            )
+            input_image = image_tensor[i]
+            if isinstance(input_image, MetaTensor):
+                segmentation_final_labels = MetaTensor(segmentation_final_labels, affine=input_image.affine)
+            row = {"segmentation": segmentation_final_labels}
+            if qc_scores is not None:
+                row["qc_scores"] = qc_scores.clone()
+            results.append(row)
+        return results
 
     @torch.inference_mode()
     def predict_synthseg_batch(self, image_tensor, brain_mask=None):
@@ -170,11 +181,12 @@ class Application:
         brain_mask: Optional batch of brain masks used to crop inputs.
             Shape (H, W, D)
         """
+        original_image_tensor = image_tensor
         if brain_mask is not None:
+            if not torch.any(brain_mask):
+                return self._empty_synthseg_results(original_image_tensor)
             original_shape = image_tensor.shape[2:]
-            bbox_start, bbox_end = generate_spatial_bounding_box(
-                brain_mask[None], margin=5
-            )
+            bbox_start, bbox_end = generate_spatial_bounding_box(brain_mask[None], margin=5, allow_smaller=True)
             image_tensor = image_tensor[
                 :,
                 :,
@@ -182,9 +194,7 @@ class Application:
                 bbox_start[1] : bbox_end[1],
                 bbox_start[2] : bbox_end[2],
             ]
-        segmentation, parcellation, qc_scores = self.synthseg_model(
-            image_tensor.to(self.device, dtype=self.dtype)
-        )
+        segmentation, parcellation, qc_scores = self.synthseg_model(image_tensor.to(self.device, dtype=self.dtype))
 
         results = []
         for i in range(segmentation.shape[0]):
@@ -192,16 +202,12 @@ class Application:
             parc_ = None
             if self.parcellation:
                 parc_ = parcellation[i]
-            segmentation_cleaned_posteriors, segmentation_final_labels = (
-                postprocessing.clean_and_combine_segmentations(
-                    segmentation=seg_.to(dtype=torch.float16),
-                    parcellation=parc_.to(dtype=torch.float16)
-                    if parc_ is not None
-                    else None,
-                    topology_classes=self.topology_classes,
-                    labels_segmentation=self.labels_segmentation,
-                    labels_parcellation=self.labels_parcellation,
-                )
+            segmentation_cleaned_posteriors, segmentation_final_labels = postprocessing.clean_and_combine_segmentations(
+                segmentation=seg_.to(dtype=torch.float16),
+                parcellation=parc_.to(dtype=torch.float16) if parc_ is not None else None,
+                topology_classes=self.topology_classes,
+                labels_segmentation=self.labels_segmentation,
+                labels_parcellation=self.labels_parcellation,
             )
             if brain_mask is not None:
                 # Pad the segmentation back to the original size
@@ -217,11 +223,9 @@ class Application:
                 ] = segmentation_final_labels
                 segmentation_final_labels = segmentation_final_labels_
             row = {}
-            input_image = image_tensor[i]
+            input_image = original_image_tensor[i]
             if isinstance(input_image, MetaTensor):
-                segmentation_final_labels = MetaTensor(
-                    segmentation_final_labels, affine=input_image.affine
-                )
+                segmentation_final_labels = MetaTensor(segmentation_final_labels, affine=input_image.affine)
             row["segmentation"] = segmentation_final_labels
             if qc_scores is not None:
                 row["qc_scores"] = qc_scores[i]
@@ -245,31 +249,21 @@ class Application:
         with open(qc_output_path, "w", newline="") as f:
             csv.writer(f).writerow(["subject", *self._qc_headers()])
 
-    def _append_qc_row(
-        self, *, qc_output_path: Path, input_image_path: str, qc_scores: torch.Tensor
-    ) -> None:
-        scores = np.clip(
-            np.squeeze(qc_scores.detach().float().cpu().numpy())[1:], 0.0, 1.0
-        )
-        row = [self._subject_id_for_qc(input_image_path)] + [
-            f"{score:.4f}" for score in scores
-        ]
+    def _append_qc_row(self, *, qc_output_path: Path, input_image_path: str, qc_scores: torch.Tensor) -> None:
+        scores = np.clip(np.squeeze(qc_scores.detach().float().cpu().numpy())[1:], 0.0, 1.0)
+        row = [self._subject_id_for_qc(input_image_path)] + [f"{score:.4f}" for score in scores]
         with open(qc_output_path, "a", newline="") as f:
             csv.writer(f).writerow(row)
 
     @torch.inference_mode()
     def predict_synthstrip_batch(self, data):
-        brain_mask = self.synthstrip_model(
-            data["image_strip"].to(self.device, dtype=self.dtype)
-        )
+        brain_mask = self.synthstrip_model(data["image_strip"].to(self.device, dtype=self.dtype))
         reorient = transforms.Orientation(axcodes="RAS")
         results = []
         for i in range(brain_mask.shape[0]):
             brain_mask_ = brain_mask[i]
             brain_mask_ = reorient(brain_mask_)
-            brain_mask = postprocessing.post_process_brain_mask(
-                brain_mask_, border=self.brain_mask_border
-            )
+            brain_mask = postprocessing.post_process_brain_mask(brain_mask_, border=self.brain_mask_border)
             row = {}
             source_image_strip = data["image_strip"][i]
             affine = None
@@ -307,11 +301,7 @@ class Application:
             if qc_output_path.suffix.lower() != ".csv":
                 qc_output_path = qc_output_path.with_suffix(".csv")
             self._write_qc_header(qc_output_path)
-        if (
-            isinstance(input_paths, str)
-            and Path(input_paths).is_file()
-            and input_paths.endswith(".txt")
-        ):
+        if isinstance(input_paths, str) and Path(input_paths).is_file() and input_paths.endswith(".txt"):
             input_paths = list(Path(input_paths).read_text().splitlines())
         input_paths = input_paths if isinstance(input_paths, list) else [input_paths]
         segmentation_out_items: list[str | None]
@@ -319,22 +309,14 @@ class Application:
         if data_root is not None:
             if segmentation_out is not None:
                 if not isinstance(segmentation_out, str):
-                    raise ValueError(
-                        "segmentation_out must be a string if data_root is provided"
-                    )
-                segmentation_out_items = [cast(str | None, segmentation_out)] * len(
-                    input_paths
-                )
+                    raise ValueError("segmentation_out must be a string if data_root is provided")
+                segmentation_out_items = [cast(str | None, segmentation_out)] * len(input_paths)
             else:
                 segmentation_out_items = [None] * len(input_paths)
             if brain_mask_out is not None:
                 if not isinstance(brain_mask_out, str):
-                    raise ValueError(
-                        "brain_mask_out must be a string if data_root is provided"
-                    )
-                brain_mask_out_items = [cast(str | None, brain_mask_out)] * len(
-                    input_paths
-                )
+                    raise ValueError("brain_mask_out must be a string if data_root is provided")
+                brain_mask_out_items = [cast(str | None, brain_mask_out)] * len(input_paths)
             else:
                 brain_mask_out_items = [None] * len(input_paths)
         else:
@@ -357,83 +339,46 @@ class Application:
         ):
             input_path = Path(input_path)
             if input_path.is_dir():
-                if (
-                    segmentation_out_path is not None
-                    and not Path(segmentation_out_path).is_dir()
-                ):
-                    raise ValueError(
-                        "segmentation_out must be a directory "
-                        "if input_path is a directory"
-                    )
-                if (
-                    brain_mask_out_path is not None
-                    and not Path(brain_mask_out_path).is_dir()
-                ):
-                    raise ValueError(
-                        "brain_mask_out must be a directory "
-                        "if input_path is a directory"
-                    )
+                if segmentation_out_path is not None and not Path(segmentation_out_path).is_dir():
+                    raise ValueError("segmentation_out must be a directory if input_path is a directory")
+                if brain_mask_out_path is not None and not Path(brain_mask_out_path).is_dir():
+                    raise ValueError("brain_mask_out must be a directory if input_path is a directory")
                 for extension in self.input_file_extensions:
                     matched_files = list(input_path.rglob(f"*{extension}"))
                     extended_input_paths.extend(p for p in matched_files)
                     file_rel_paths = [
-                        Path(
-                            p.relative_to(input_path).as_posix().removesuffix(extension)
-                            + self.output_extension
-                        )
+                        Path(p.relative_to(input_path).as_posix().removesuffix(extension) + self.output_extension)
                         for p in matched_files
                     ]
                     if segmentation_out_path is not None:
-                        extended_segmentation_out_paths.extend(
-                            [segmentation_out_path / p for p in file_rel_paths]
-                        )
+                        extended_segmentation_out_paths.extend([segmentation_out_path / p for p in file_rel_paths])
                     else:
-                        extended_segmentation_out_paths.extend(
-                            [None] * len(file_rel_paths)
-                        )
+                        extended_segmentation_out_paths.extend([None] * len(file_rel_paths))
                     if brain_mask_out_path is not None:
-                        extended_brain_mask_out_paths.extend(
-                            [brain_mask_out_path / p for p in file_rel_paths]
-                        )
+                        extended_brain_mask_out_paths.extend([brain_mask_out_path / p for p in file_rel_paths])
                     else:
-                        extended_brain_mask_out_paths.extend(
-                            [None] * len(file_rel_paths)
-                        )
-                    print(
-                        f"Found {len(matched_files)} files for {input_path} "
-                        f"with extension {extension}"
-                    )
+                        extended_brain_mask_out_paths.extend([None] * len(file_rel_paths))
+                    print(f"Found {len(matched_files)} files for {input_path} with extension {extension}")
             else:
                 extended_input_paths.append(input_path)
                 if data_root is not None:
                     rel_path = Path(
-                        input_path.relative_to(data_root)
-                        .as_posix()
-                        .removesuffix(".nii.gz")
-                        + self.output_extension
+                        input_path.relative_to(data_root).as_posix().removesuffix(".nii.gz") + self.output_extension
                     )
                     if segmentation_out_path is not None:
-                        extended_segmentation_out_paths.append(
-                            segmentation_out_path / rel_path
-                        )
+                        extended_segmentation_out_paths.append(segmentation_out_path / rel_path)
                     else:
                         extended_segmentation_out_paths.append(None)
                     if brain_mask_out_path is not None:
-                        extended_brain_mask_out_paths.append(
-                            brain_mask_out_path / rel_path
-                        )
+                        extended_brain_mask_out_paths.append(brain_mask_out_path / rel_path)
                     else:
                         extended_brain_mask_out_paths.append(None)
                 else:
                     extended_segmentation_out_paths.append(
-                        Path(segmentation_out_path)
-                        if segmentation_out_path is not None
-                        else None
+                        Path(segmentation_out_path) if segmentation_out_path is not None else None
                     )
                     extended_brain_mask_out_paths.append(
-                        Path(brain_mask_out_path)
-                        if brain_mask_out_path is not None
-                        else None
+                        Path(brain_mask_out_path) if brain_mask_out_path is not None else None
                     )
         input_paths = extended_input_paths
         segmentation_out_paths = extended_segmentation_out_paths
@@ -454,34 +399,22 @@ class Application:
             non_existing = [input_paths[i] for i, e in enumerate(existing) if not e]
             raise ValueError(f"input_paths {non_existing} do not exist")
         if self.skip_existing:
-            existing_segmentations = [
-                path is None or Path(path).exists() for path in segmentation_out_paths
-            ]
-            existing_brain_mask = [
-                path is None or Path(path).exists() for path in brain_mask_out_paths
-            ]
-            existing_outputs = np.logical_and(
-                existing_segmentations, existing_brain_mask
-            )
+            existing_segmentations = [path is None or Path(path).exists() for path in segmentation_out_paths]
+            existing_brain_mask = [path is None or Path(path).exists() for path in brain_mask_out_paths]
+            existing_outputs = np.logical_and(existing_segmentations, existing_brain_mask)
             input_paths = [
                 input_path
-                for input_path, existing_output in zip(
-                    input_paths, existing_outputs, strict=False
-                )
+                for input_path, existing_output in zip(input_paths, existing_outputs, strict=False)
                 if not existing_output
             ]
             segmentation_out_paths = [
                 output_path
-                for output_path, existing_output in zip(
-                    segmentation_out_paths, existing_outputs, strict=False
-                )
+                for output_path, existing_output in zip(segmentation_out_paths, existing_outputs, strict=False)
                 if not existing_output
             ]
             brain_mask_out_paths = [
                 brain_mask_out_path
-                for brain_mask_out_path, existing_output in zip(
-                    brain_mask_out_paths, existing_outputs, strict=False
-                )
+                for brain_mask_out_path, existing_output in zip(brain_mask_out_paths, existing_outputs, strict=False)
                 if not existing_output
             ]
             print(f"Skipping {sum(existing_outputs)} existing segmentations")
@@ -498,9 +431,7 @@ class Application:
                     {
                         "image": image.as_posix(),
                         "output": output.as_posix() if output is not None else "",
-                        "brain_mask_output": brain_mask_out.as_posix()
-                        if brain_mask_out is not None
-                        else "",
+                        "brain_mask_output": brain_mask_out.as_posix() if brain_mask_out is not None else "",
                         "id": id,
                     }
                     for image, output, brain_mask_out, id in zip(
@@ -515,19 +446,14 @@ class Application:
             )
         )
         assert self.BATCH_SIZE == 1, "Batch size must be 1 for the pipeline logic"
-        dataloader = ThreadDataLoader(
-            dataset, batch_size=self.BATCH_SIZE, use_thread_workers=True, num_workers=4
-        )
+        dataloader = ThreadDataLoader(dataset, batch_size=self.BATCH_SIZE, use_thread_workers=True, num_workers=4)
         saver = transforms.SaveImage(output_ext=self.output_extension, print_log=False)
         progress: tqdm[Any] | None = tqdm(dataloader) if use_prog_bar else None
         data_iterable = progress if progress is not None else dataloader
         for data in data_iterable:
             # TODO: Use brain mask to crop segmentation input.
             if "exception" in data:
-                print(
-                    f"Skipping {data['image'][0]} "
-                    f"due to exception: {data['exception'][0]}"
-                )
+                print(f"Skipping {data['image'][0]} due to exception: {data['exception'][0]}")
                 if callback is not None:
                     callback(
                         {
@@ -561,33 +487,23 @@ class Application:
                 if do_brain_mask:
                     for i in range(len(brain_masks)):
                         brain_mask_output_path = (
-                            data["brain_mask_output"][i]
-                            .removesuffix(".nii")
-                            .removesuffix(".nii.gz")
+                            data["brain_mask_output"][i].removesuffix(".nii").removesuffix(".nii.gz")
                         )
-                        Path(brain_mask_output_path).parent.mkdir(
-                            parents=True, exist_ok=True
-                        )
+                        Path(brain_mask_output_path).parent.mkdir(parents=True, exist_ok=True)
                         saver(
                             brain_masks[i]["brain_mask"][None].cpu(),
                             filename=brain_mask_output_path,
                         )
-                        item_result["synthstrip"] = (
-                            brain_mask_output_path + self.output_extension
-                        )
+                        item_result["synthstrip"] = brain_mask_output_path + self.output_extension
 
             if do_segmentation:
                 try:
                     synthseg_input = data["image"]
                     brain_mask = None
                     if self.crop_segmentation_input_to_brain_mask:
-                        assert len(brain_masks) == 1, (
-                            "Batch size must be 1 when cropping to brain mask"
-                        )
+                        assert len(brain_masks) == 1, "Batch size must be 1 when cropping to brain mask"
                         brain_mask = brain_masks[0]["brain_mask"]
-                    segmentations = self.predict_synthseg_batch(
-                        synthseg_input, brain_mask=brain_mask
-                    )
+                    segmentations = self.predict_synthseg_batch(synthseg_input, brain_mask=brain_mask)
                     del synthseg_input
                 except KeyboardInterrupt:
                     raise
@@ -596,9 +512,7 @@ class Application:
                     traceback.print_exc()
                     continue
                 for i in range(len(segmentations)):
-                    output_path = (
-                        data["output"][i].removesuffix(".nii").removesuffix(".nii.gz")
-                    )
+                    output_path = data["output"][i].removesuffix(".nii").removesuffix(".nii.gz")
                     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
                     saver(
                         segmentations[i]["segmentation"][None].cpu(),

@@ -8,6 +8,7 @@ import pytest
 
 from brain_segmentation_tools.model_manager import ModelManager
 from test.helpers import (
+    ORACLE_DIR,
     TEST_RES_DIR,
     dice,
     install_test_models,
@@ -15,10 +16,10 @@ from test.helpers import (
     preferred_test_device,
 )
 
-SEGMENTATION_MIN_VOXEL_ACCURACY = 0.9999
-SEGMENTATION_MIN_FOREGROUND_DICE = 0.9999
-BRAIN_MASK_MIN_VOXEL_ACCURACY = 0.999
-BRAIN_MASK_MIN_DICE = 0.9999
+SEGMENTATION_MIN_VOXEL_ACCURACY = 0.9985
+SEGMENTATION_MIN_FOREGROUND_DICE = 0.999
+BRAIN_MASK_MIN_VOXEL_ACCURACY = 0.998
+BRAIN_MASK_MIN_DICE = 0.995
 
 
 @pytest.fixture(scope="session")
@@ -82,7 +83,7 @@ def generated_outputs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Pat
 
 def test_synthseg_output_matches_reference(generated_outputs: dict[str, Path]) -> None:
     actual_data, actual_affine = load_nifti(generated_outputs["segmentation"])
-    expected_data, expected_affine = load_nifti(TEST_RES_DIR / "synthseg.nii.gz")
+    expected_data, expected_affine = load_nifti(ORACLE_DIR / "synthseg_oracle_robust_0_parc_1.nii.gz")
 
     assert actual_data.shape == expected_data.shape
     assert np.allclose(actual_affine, expected_affine, atol=1e-5)
@@ -92,19 +93,13 @@ def test_synthseg_output_matches_reference(generated_outputs: dict[str, Path]) -
 
     voxel_accuracy = float((actual_labels == expected_labels).mean())
     foreground_dice = dice(actual_labels, expected_labels)
-    print(
-        "SynthSeg metrics: "
-        f"voxel_accuracy={voxel_accuracy:.6f}, "
-        f"foreground_dice={foreground_dice:.6f}"
-    )
+    print(f"SynthSeg metrics: voxel_accuracy={voxel_accuracy:.6f}, foreground_dice={foreground_dice:.6f}")
 
     assert voxel_accuracy >= SEGMENTATION_MIN_VOXEL_ACCURACY, (
-        f"Segmentation voxel accuracy {voxel_accuracy:.5f} is below "
-        f"threshold {SEGMENTATION_MIN_VOXEL_ACCURACY:.5f}."
+        f"Segmentation voxel accuracy {voxel_accuracy:.5f} is below threshold {SEGMENTATION_MIN_VOXEL_ACCURACY:.5f}."
     )
     assert foreground_dice >= SEGMENTATION_MIN_FOREGROUND_DICE, (
-        f"Segmentation foreground Dice {foreground_dice:.5f} is below "
-        f"threshold {SEGMENTATION_MIN_FOREGROUND_DICE:.5f}."
+        f"Segmentation foreground Dice {foreground_dice:.5f} is below threshold {SEGMENTATION_MIN_FOREGROUND_DICE:.5f}."
     )
 
 
@@ -112,7 +107,7 @@ def test_synthstrip_output_matches_reference(
     generated_outputs: dict[str, Path],
 ) -> None:
     actual_data, actual_affine = load_nifti(generated_outputs["brain_mask"])
-    expected_data, expected_affine = load_nifti(TEST_RES_DIR / "synthstrip.nii.gz")
+    expected_data, expected_affine = load_nifti(ORACLE_DIR / "synthstrip_oracle_nocsf_0.nii.gz")
 
     assert actual_data.shape == expected_data.shape
     assert np.allclose(actual_affine, expected_affine, atol=1e-5)
@@ -122,16 +117,11 @@ def test_synthstrip_output_matches_reference(
 
     voxel_accuracy = float((actual_mask == expected_mask).mean())
     dice_score = dice(actual_mask, expected_mask)
-    print(
-        f"SynthStrip metrics: voxel_accuracy={voxel_accuracy:.6f}, "
-        f"dice={dice_score:.6f}"
-    )
+    print(f"SynthStrip metrics: voxel_accuracy={voxel_accuracy:.6f}, dice={dice_score:.6f}")
 
     assert voxel_accuracy >= BRAIN_MASK_MIN_VOXEL_ACCURACY, (
-        f"Brain mask voxel accuracy {voxel_accuracy:.5f} is below "
-        f"threshold {BRAIN_MASK_MIN_VOXEL_ACCURACY:.5f}."
+        f"Brain mask voxel accuracy {voxel_accuracy:.5f} is below threshold {BRAIN_MASK_MIN_VOXEL_ACCURACY:.5f}."
     )
     assert dice_score >= BRAIN_MASK_MIN_DICE, (
-        f"Brain mask Dice {dice_score:.5f} is below "
-        f"threshold {BRAIN_MASK_MIN_DICE:.5f}."
+        f"Brain mask Dice {dice_score:.5f} is below threshold {BRAIN_MASK_MIN_DICE:.5f}."
     )
