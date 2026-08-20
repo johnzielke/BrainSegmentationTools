@@ -132,3 +132,51 @@ def test_run_with_cropped_input_and_brain_touching_border(tmp_path: Path, monkey
 
     assert voxel_accuracy >= SEGMENTATION_MIN_VOXEL_ACCURACY
     assert foreground_dice >= SEGMENTATION_MIN_FOREGROUND_DICE
+
+
+def test_run_with_contrast_classifier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("monai")
+
+    from brain_segmentation_tools.app import Application
+
+    patch_single_worker_dataloader(monkeypatch)
+
+    model_cache_dir = tmp_path / "model_cache"
+    monkeypatch.setenv(ModelManager.MODEL_CACHE_DIR_ENV_VAR, model_cache_dir.as_posix())
+    install_test_models(
+        model_cache_dir,
+        [
+            ("synthseg", "segmentation", "2.0"),
+            ("synthstrip", "normal", "1"),
+            ("contrast_classifier", "normal", "1"),
+        ],
+    )
+
+    app = Application(
+        device=preferred_test_device(),
+        version="v2.0",
+        no_compile=True,
+        dev_mode=False,
+        contrast=True,
+    )
+
+    output_path = tmp_path / "contrast_synthseg.nii.gz"
+    brain_mask_output_path = tmp_path / "contrast_synthstrip.nii.gz"
+    results: list[dict] = []
+    app.run(
+        input_paths=(TEST_RES_DIR / "spgr_unstrip.nii.gz").as_posix(),
+        segmentation_out=output_path.as_posix(),
+        brain_mask_out=brain_mask_output_path.as_posix(),
+        use_prog_bar=False,
+        callback=results.append,
+    )
+
+    assert output_path.exists()
+    assert len(results) == 1
+    result = results[0]
+    assert result["success"]
+    assert "contrast_probability" in result
+    assert "is_contrast" in result
+    assert isinstance(result["contrast_probability"], float)
+    assert 0.0 <= result["contrast_probability"] <= 1.0
+    assert result["is_contrast"] == (result["contrast_probability"] >= 0.5)

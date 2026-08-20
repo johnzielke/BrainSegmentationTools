@@ -1,14 +1,16 @@
 import os
 
 import torch
+import torch._dynamo
+import torch._dynamo.config
 import torch.nn.functional as F
 from monai.networks.layers import GaussianFilter
 
 from brain_segmentation_tools import utils
 from brain_segmentation_tools.qc_model import QCSynthSegRegressor
-from brain_segmentation_tools.unet_pytorch import UNet
+from brain_segmentation_tools.unet_pytorch import UNet, drop_unknown_state_dict_keys
 
-torch._dynamo.config.capture_scalar_outputs = True
+torch._dynamo.config.capture_scalar_outputs = True  # ty: ignore[invalid-assignment]
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
@@ -101,13 +103,9 @@ class Synthseg(torch.nn.Module):
                 nb_conv_per_level=2,
                 batch_norm=True,
             )
-            self.segmentation_model.load_weights(
-                self.model_file_segmentation, prefix="unet"
-            )
+            self.segmentation_model.load_weights(self.model_file_segmentation, prefix="unet")
 
-            self.segmentation_gaussian_filter = GaussianFilter(
-                spatial_dims=3, sigma=0.5, approx="sampled"
-            )
+            self.segmentation_gaussian_filter = GaussianFilter(spatial_dims=3, sigma=0.5, approx="sampled")
         if do_parcellation:
             n_labels_parcellation = len(labels_parcellation)
             self.parcellation_model = UNet(
@@ -121,12 +119,8 @@ class Synthseg(torch.nn.Module):
                 nb_conv_per_level=2,
                 batch_norm=True,
             )
-            self.parcellation_model.load_weights(
-                self.model_file_parcellation, prefix="unet_parc"
-            )
-            self.parcellation_gaussian_filter = GaussianFilter(
-                spatial_dims=3, sigma=0.5, approx="sampled"
-            )
+            self.parcellation_model.load_weights(self.model_file_parcellation, prefix="unet_parc")
+            self.parcellation_gaussian_filter = GaussianFilter(spatial_dims=3, sigma=0.5, approx="sampled")
         if do_qc:
             if model_file_qc is None:
                 raise ValueError("model_file_qc is required when do_qc=True")
@@ -162,13 +156,15 @@ class Synthseg(torch.nn.Module):
             and "segmentation_model_stage2" in state_dict
         ):
             self.segmentation_model_stage1.load_state_dict(
-                state_dict["segmentation_model_stage1"]
+                drop_unknown_state_dict_keys(self.segmentation_model_stage1, state_dict["segmentation_model_stage1"])
             )
             self.segmentation_model_denoiser.load_state_dict(
-                state_dict["segmentation_model_denoiser"]
+                drop_unknown_state_dict_keys(
+                    self.segmentation_model_denoiser, state_dict["segmentation_model_denoiser"]
+                )
             )
             self.segmentation_model_stage2.load_state_dict(
-                state_dict["segmentation_model_stage2"]
+                drop_unknown_state_dict_keys(self.segmentation_model_stage2, state_dict["segmentation_model_stage2"])
             )
             return
 
@@ -189,21 +185,24 @@ class Synthseg(torch.nn.Module):
                 if k.startswith("segmentation_model_stage2.")
             }
             if stage1_state_dict and denoiser_state_dict and stage2_state_dict:
-                self.segmentation_model_stage1.load_state_dict(stage1_state_dict)
-                self.segmentation_model_denoiser.load_state_dict(denoiser_state_dict)
-                self.segmentation_model_stage2.load_state_dict(stage2_state_dict)
+                self.segmentation_model_stage1.load_state_dict(
+                    drop_unknown_state_dict_keys(self.segmentation_model_stage1, stage1_state_dict)
+                )
+                self.segmentation_model_denoiser.load_state_dict(
+                    drop_unknown_state_dict_keys(self.segmentation_model_denoiser, denoiser_state_dict)
+                )
+                self.segmentation_model_stage2.load_state_dict(
+                    drop_unknown_state_dict_keys(self.segmentation_model_stage2, stage2_state_dict)
+                )
                 return
 
         raise ValueError(
-            f"Unsupported robust checkpoint format for {model_path}: "
-            f"expected stage-wise state_dict entries"
+            f"Unsupported robust checkpoint format for {model_path}: expected stage-wise state_dict entries"
         )
 
     def _prepare_parcellation_input(self, *, image, segmentation):
         argmax = torch.argmax(segmentation, dim=1, keepdim=True)
-        mask = (argmax == self.labels_segmentation.index(3)) | (
-            argmax == self.labels_segmentation.index(42)
-        )
+        mask = (argmax == self.labels_segmentation.index(3)) | (argmax == self.labels_segmentation.index(42))
         return torch.cat([image, ~mask, mask], dim=1)
 
     @utils.predict_with_padding(SYNTHSEG_DIVISIBLE_K, multiple_returns=True)
@@ -211,41 +210,23 @@ class Synthseg(torch.nn.Module):
         n_labels_parcellation = len(self.labels_parcellation)
         if self.robust:
             segmentation = self.segmentation_model_stage1(image)
-            segmentation = F.one_hot(
-                torch.argmax(segmentation, dim=1), num_classes=self.n_labels_denoiser
-            )
-            segmentation = segmentation.permute(0, 4, 1, 2, 3).to(
-                dtype=image.dtype, device=image.device
-            )
+            segmentation = F.one_hot(torch.argmax(segmentation, dim=1), num_classes=self.n_labels_denoiser)
+            segmentation = segmentation.permute(0, 4, 1, 2, 3).to(dtype=image.dtype, device=image.device)
             segmentation = self.segmentation_model_denoiser(segmentation)
-            segmentation = F.one_hot(
-                torch.argmax(segmentation, dim=1), num_classes=self.n_labels_denoiser
-            )
-            segmentation = segmentation.permute(0, 4, 1, 2, 3).to(
-                dtype=image.dtype, device=image.device
-            )
-            segmentation = self.segmentation_model_stage2(
-                torch.cat([image, segmentation], dim=1)
-            )
+            segmentation = F.one_hot(torch.argmax(segmentation, dim=1), num_classes=self.n_labels_denoiser)
+            segmentation = segmentation.permute(0, 4, 1, 2, 3).to(dtype=image.dtype, device=image.device)
+            segmentation = self.segmentation_model_stage2(torch.cat([image, segmentation], dim=1))
         else:
             segmentation = self.segmentation_model(image)
             segmentation = self.segmentation_gaussian_filter(segmentation)
             if self.flip_indices is not None:
-                segmentation_flipped = self.segmentation_model(
-                    image.flip([self.FLIP_SPATIAL_AXIS + 2])
-                )
-                segmentation_flipped = torch.flip(
-                    segmentation_flipped, [self.FLIP_SPATIAL_AXIS + 2]
-                )
-                segmentation_flipped = self.segmentation_gaussian_filter(
-                    segmentation_flipped
-                )
+                segmentation_flipped = self.segmentation_model(image.flip([self.FLIP_SPATIAL_AXIS + 2]))
+                segmentation_flipped = torch.flip(segmentation_flipped, [self.FLIP_SPATIAL_AXIS + 2])
+                segmentation_flipped = self.segmentation_gaussian_filter(segmentation_flipped)
                 rearranged_tensor = []
                 for i in range(self.n_labels_seg):
                     if i in self.flip_indices:
-                        rearranged_tensor.append(
-                            segmentation_flipped[:, self.flip_indices[i], ...]
-                        )
+                        rearranged_tensor.append(segmentation_flipped[:, self.flip_indices[i], ...])
                     else:
                         rearranged_tensor.append(segmentation_flipped[:, i, ...])
                 segmentation += torch.stack(rearranged_tensor, dim=1)
@@ -264,9 +245,7 @@ class Synthseg(torch.nn.Module):
                 parcellation[:, 0, ...] = 1
             else:
                 parcellation = self.parcellation_model(
-                    self._prepare_parcellation_input(
-                        image=image, segmentation=segmentation
-                    )
+                    self._prepare_parcellation_input(image=image, segmentation=segmentation)
                 )
                 parcellation = self.parcellation_gaussian_filter(parcellation)
         else:

@@ -1,0 +1,57 @@
+{
+  "name": "brain-segmentation-tools",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "runArgs": [
+    "--gpus=all",
+    "--ipc=host",
+    "--cap-add=SYS_ADMIN",
+    "--cap-add=PERFMON",
+    "--security-opt=seccomp=unconfined"
+  ],
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.11"
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/node:1": {},
+    "ghcr.io/jsburckhardt/devcontainer-features/uv:1": {},
+    "ghcr.io/guiyomh/features/just:0": {}
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.debugpy",
+        "charliermarsh.ruff",
+        "tamasfe.even-better-toml",
+        "astral-sh.ty"
+
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "python.defaultInterpreterPath": "/workspaces/BrainSegmentationTools/.venv/bin/python",
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff"
+        }
+      }
+    }
+  },
+  "mounts": [
+    "source=${localEnv:HOME}/.codex,target=/home/vscode/.codex,type=bind,consistency=cached"
+  ],
+  "postCreateCommand": {
+    "bootstrap": "bash .devcontainer/post-create.sh",
+    "codex": "bash -i -c 'npm install -g @openai/codex'"
+  },
+  "remoteEnv": {
+    "BRAIN_SEGMENTATION_TOOLS_MODEL_CACHE_DIR": "/workspaces/BrainSegmentationTools/build/model_cache",
+    "PYTHONPATH": "/workspaces/BrainSegmentationTools",
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+    "UV_CACHE_DIR": "/workspaces/BrainSegmentationTools/.uv"
+  },
+  "updateRemoteUserUID": true,
+  "remoteUser": "vscode"
+}

@@ -158,19 +158,13 @@ def get_list_labels_sorted(model, version, FS_sort=False):
             if la not in left:
                 left.append(la)
         elif (
-            (39 < la < 72)
-            | (162 < la < 165)
-            | (2000 <= la <= 2035)
-            | (20000 < la < 20010)
-            | (la == 139)
-            | (la == 866)
+            (39 < la < 72) | (162 < la < 165) | (2000 <= la <= 2035) | (20000 < la < 20010) | (la == 139) | (la == 866)
         ):
             if la not in right:
                 right.append(la)
         else:
             raise Exception(
-                f"label {la} not in our current FS classification, "
-                "please update get_list_labels in utils.py"
+                f"label {la} not in our current FS classification, please update get_list_labels in utils.py"
             )
     label_list = np.concatenate([sorted(neutral), sorted(left), sorted(right)])
     if ((len(left) > 0) & (len(right) > 0)) | ((len(left) == 0) & (len(right) == 0)):
@@ -195,15 +189,9 @@ def get_flip_indices(labels_segmentation, n_neutral_labels):
             labels_segmentation[n_neutral_labels + n_sided_labels :],
         ]
     )
-    lr_corresp_unique, lr_corresp_indices = np.unique(
-        lr_corresp[0, :], return_index=True
-    )
+    lr_corresp_unique, lr_corresp_indices = np.unique(lr_corresp[0, :], return_index=True)
     lr_corresp_unique = np.stack([lr_corresp_unique, lr_corresp[1, lr_corresp_indices]])
-    lr_corresp_unique = (
-        lr_corresp_unique[:, 1:]
-        if not np.all(lr_corresp_unique[:, 0])
-        else lr_corresp_unique
-    )
+    lr_corresp_unique = lr_corresp_unique[:, 1:] if not np.all(lr_corresp_unique[:, 0]) else lr_corresp_unique
 
     # get unique labels
     labels_segmentation, unique_idx = np.unique(labels_segmentation, return_index=True)
@@ -220,13 +208,9 @@ def get_flip_indices(labels_segmentation, n_neutral_labels):
         if labels_segmentation[i] in neutral_labels:
             flip_indices[i] = i
         elif labels_segmentation[i] in left:
-            flip_indices[i] = lr_indices[
-                1, np.where(lr_corresp_unique[0, :] == labels_segmentation[i])
-            ].item()
+            flip_indices[i] = lr_indices[1, np.where(lr_corresp_unique[0, :] == labels_segmentation[i])].item()
         else:
-            flip_indices[i] = lr_indices[
-                0, np.where(lr_corresp_unique[1, :] == labels_segmentation[i])
-            ].item()
+            flip_indices[i] = lr_indices[0, np.where(lr_corresp_unique[1, :] == labels_segmentation[i])].item()
 
     return labels_segmentation, flip_indices, unique_idx
 
@@ -275,9 +259,7 @@ class ErrorCatchingDataset(Dataset):
         return len(self.dataset)
 
 
-def convert_to_meta_tensor(
-    data: torch.Tensor, *, copy_meta_from: MetaTensor | None = None
-) -> MetaTensor:
+def convert_to_meta_tensor(data: torch.Tensor, *, copy_meta_from: MetaTensor | None = None) -> MetaTensor:
     if copy_meta_from is None:
         return MetaTensor(data)
     return MetaTensor(
@@ -301,9 +283,7 @@ def predict_with_padding(divisible_by: int, multiple_returns=False):
             pad_args = tuple(itertools.chain(*pad_width[::-1]))
             padded_tensor = F.pad(x, pad_args)
             out = func(model, padded_tensor, *args, **kwargs)
-            unpad_slices = [slice(None), slice(None)] + [
-                slice(s[0], -s[1] if s[1] > 0 else None) for s in pad_width
-            ]
+            unpad_slices = [slice(None), slice(None)] + [slice(s[0], -s[1] if s[1] > 0 else None) for s in pad_width]
             if multiple_returns:
                 if isinstance(out, (list, tuple)):
                     unpadded_out = [

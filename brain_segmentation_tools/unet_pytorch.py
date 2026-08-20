@@ -6,6 +6,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def drop_unknown_state_dict_keys(model: nn.Module, state_dict: dict) -> dict:
+    """Drop entries for parameters the model no longer defines (e.g. stale upsample weights)."""
+    own_keys = set(model.state_dict().keys())
+    return {key: value for key, value in state_dict.items() if key in own_keys}
+
+
 class ConvBlock(nn.Module):
     def __init__(
         self,
@@ -27,11 +33,7 @@ class ConvBlock(nn.Module):
             padding = kernel_size // 2
 
         self.conv = nn.Conv3d(in_channels, out_channels, kernel_size, padding=padding)
-        self.batch_norm = (
-            nn.BatchNorm3d(out_channels)
-            if batch_norm is not None and is_last_in_level
-            else None
-        )
+        self.batch_norm = nn.BatchNorm3d(out_channels) if batch_norm is not None and is_last_in_level else None
         self.dropout = nn.Dropout3d(p=conv_dropout) if conv_dropout > 0 else None
 
     def forward(self, x):
@@ -44,13 +46,13 @@ class ConvBlock(nn.Module):
 
         if self.use_residual:
             if identity.size(1) != out.size(1):
-                identity = F.pad(
-                    identity, (0, 0, 0, 0, 0, 0, 0, out.size(1) - identity.size(1))
-                )
+                identity = F.pad(identity, (0, 0, 0, 0, 0, 0, 0, out.size(1) - identity.size(1)))
             out = out + identity
 
         if self.activation == "elu":
             out = F.elu(out)
+        elif self.activation == "leaky_relu":
+            out = F.leaky_relu(out, negative_slope=0.2)
         elif self.activation == "relu":
             out = F.relu(out)
         if self.batch_norm is not None:
@@ -63,17 +65,7 @@ class ConvBlock(nn.Module):
 
 
 def upsample_layer(channels, factor=2):
-    layer = nn.ConvTranspose3d(
-        channels,
-        channels,
-        kernel_size=factor,
-        stride=factor,
-        groups=channels,
-        bias=False,
-    )
-    # Set weights to 1
-    nn.init.constant_(layer.weight, 1)
-    return layer
+    return nn.Upsample(scale_factor=factor, mode="nearest")
 
 
 class UNet(nn.Module):
@@ -92,6 +84,7 @@ class UNet(nn.Module):
         final_pred_activation="softmax",
         nb_conv_per_level=1,
         skip_n_concatenations=0,
+        half_res=False,
         conv_dropout=0,
         batch_norm=None,
     ):
@@ -103,6 +96,7 @@ class UNet(nn.Module):
         self.pool_size = pool_size
         self.nb_conv_per_level = nb_conv_per_level
         self.skip_n_concatenations = skip_n_concatenations
+        self.half_res = half_res
 
         self.encoder_blocks = nn.ModuleList()
         self.pool_layers = nn.ModuleList()
@@ -137,13 +131,12 @@ class UNet(nn.Module):
 
         for decoder_level, level in enumerate(range(nb_levels - 2, -1, -1)):
             nb_lvl_feats = int(nb_features * feat_mult**level)
-            use_skip_connections = decoder_level < (
-                nb_levels - self.skip_n_concatenations - 1
-            )
+            use_skip_connections = decoder_level < (nb_levels - self.skip_n_concatenations - 1)
             self.decoder_uses_skip_connections.append(use_skip_connections)
+            should_upsample = (not self.half_res) or decoder_level < (nb_levels - 2)
 
             in_channels = int(nb_features * feat_mult ** (level + 1))
-            if use_skip_connections:
+            if should_upsample and use_skip_connections:
                 in_channels += nb_lvl_feats
             self.upsamples.append(
                 upsample_layer(
@@ -186,8 +179,10 @@ class UNet(nn.Module):
                 x = self.pool_layers[level](x)
 
         for level in range(self.nb_levels - 1):
-            x = self.upsamples[level](x)
-            if self.decoder_uses_skip_connections[level]:
+            should_upsample = (not self.half_res) or level < (self.nb_levels - 2)
+            if should_upsample:
+                x = self.upsamples[level](x)
+            if should_upsample and self.decoder_uses_skip_connections[level]:
                 x = torch.cat([encoder_features[-level - 1], x], dim=1)
             r_val = self.decoder_blocks[level](x)
             if isinstance(r_val, tuple):
@@ -206,9 +201,7 @@ class UNet(nn.Module):
         try:
             import h5py
         except ImportError as e:
-            raise ImportError(
-                "h5py is required to load TensorFlow .h5 model weights"
-            ) from e
+            raise ImportError("h5py is required to load TensorFlow .h5 model weights") from e
 
         tf_weights = {}
 
@@ -229,37 +222,30 @@ class UNet(nn.Module):
 
         for level in range(self.nb_levels):
             for conv_idx in range(self.nb_conv_per_level):
-                layer_prefix = (
-                    f"{prefix}_conv_downarm_{level}_{conv_idx}/"
-                    f"{prefix}_conv_downarm_{level}_{conv_idx}"
-                )
+                layer_prefix = f"{prefix}_conv_downarm_{level}_{conv_idx}/{prefix}_conv_downarm_{level}_{conv_idx}"
                 tf_name_conv = f"{layer_prefix}/kernel:0"
                 tf_name_bias = f"{layer_prefix}/bias:0"
 
                 if tf_name_conv in tf_weights:
                     weight = np.transpose(tf_weights[tf_name_conv], (4, 3, 0, 1, 2))
-                    state_dict[f"encoder_blocks.{level}.{conv_idx}.conv.weight"] = (
-                        torch.from_numpy(weight)
-                    )
-                    state_dict[f"encoder_blocks.{level}.{conv_idx}.conv.bias"] = (
-                        torch.from_numpy(tf_weights[tf_name_bias])
+                    state_dict[f"encoder_blocks.{level}.{conv_idx}.conv.weight"] = torch.from_numpy(weight)
+                    state_dict[f"encoder_blocks.{level}.{conv_idx}.conv.bias"] = torch.from_numpy(
+                        tf_weights[tf_name_bias]
                     )
 
                 if conv_idx == self.nb_conv_per_level - 1:
                     bn_prefix = f"{prefix}_bn_down_{level}/{prefix}_bn_down_{level}"
                     if f"{bn_prefix}/gamma:0" in tf_weights:
-                        state_dict[
-                            f"encoder_blocks.{level}.{conv_idx}.batch_norm.weight"
-                        ] = torch.from_numpy(tf_weights[f"{bn_prefix}/gamma:0"])
-                        state_dict[
-                            f"encoder_blocks.{level}.{conv_idx}.batch_norm.bias"
-                        ] = torch.from_numpy(tf_weights[f"{bn_prefix}/beta:0"])
-                        state_dict[
-                            f"encoder_blocks.{level}.{conv_idx}.batch_norm.running_mean"
-                        ] = torch.from_numpy(tf_weights[f"{bn_prefix}/moving_mean:0"])
-                        state_dict[
-                            f"encoder_blocks.{level}.{conv_idx}.batch_norm.running_var"
-                        ] = torch.from_numpy(
+                        state_dict[f"encoder_blocks.{level}.{conv_idx}.batch_norm.weight"] = torch.from_numpy(
+                            tf_weights[f"{bn_prefix}/gamma:0"]
+                        )
+                        state_dict[f"encoder_blocks.{level}.{conv_idx}.batch_norm.bias"] = torch.from_numpy(
+                            tf_weights[f"{bn_prefix}/beta:0"]
+                        )
+                        state_dict[f"encoder_blocks.{level}.{conv_idx}.batch_norm.running_mean"] = torch.from_numpy(
+                            tf_weights[f"{bn_prefix}/moving_mean:0"]
+                        )
+                        state_dict[f"encoder_blocks.{level}.{conv_idx}.batch_norm.running_var"] = torch.from_numpy(
                             tf_weights[f"{bn_prefix}/moving_variance:0"]
                         )
 
@@ -267,36 +253,31 @@ class UNet(nn.Module):
             for conv_idx in range(self.nb_conv_per_level):
                 decoder_level = self.nb_levels + level
                 layer_prefix = (
-                    f"{prefix}_conv_uparm_{decoder_level}_{conv_idx}/"
-                    f"{prefix}_conv_uparm_{decoder_level}_{conv_idx}"
+                    f"{prefix}_conv_uparm_{decoder_level}_{conv_idx}/{prefix}_conv_uparm_{decoder_level}_{conv_idx}"
                 )
                 tf_name_conv = f"{layer_prefix}/kernel:0"
                 tf_name_bias = f"{layer_prefix}/bias:0"
 
                 if tf_name_conv in tf_weights:
                     weight = np.transpose(tf_weights[tf_name_conv], (4, 3, 0, 1, 2))
-                    state_dict[f"decoder_blocks.{level}.{conv_idx}.conv.weight"] = (
-                        torch.from_numpy(weight)
-                    )
-                    state_dict[f"decoder_blocks.{level}.{conv_idx}.conv.bias"] = (
-                        torch.from_numpy(tf_weights[tf_name_bias])
+                    state_dict[f"decoder_blocks.{level}.{conv_idx}.conv.weight"] = torch.from_numpy(weight)
+                    state_dict[f"decoder_blocks.{level}.{conv_idx}.conv.bias"] = torch.from_numpy(
+                        tf_weights[tf_name_bias]
                     )
 
                 if conv_idx == self.nb_conv_per_level - 1:
                     bn_prefix = f"{prefix}_bn_up_{level}/{prefix}_bn_up_{level}"
                     if f"{bn_prefix}/gamma:0" in tf_weights:
-                        state_dict[
-                            f"decoder_blocks.{level}.{conv_idx}.batch_norm.weight"
-                        ] = torch.from_numpy(tf_weights[f"{bn_prefix}/gamma:0"])
-                        state_dict[
-                            f"decoder_blocks.{level}.{conv_idx}.batch_norm.bias"
-                        ] = torch.from_numpy(tf_weights[f"{bn_prefix}/beta:0"])
-                        state_dict[
-                            f"decoder_blocks.{level}.{conv_idx}.batch_norm.running_mean"
-                        ] = torch.from_numpy(tf_weights[f"{bn_prefix}/moving_mean:0"])
-                        state_dict[
-                            f"decoder_blocks.{level}.{conv_idx}.batch_norm.running_var"
-                        ] = torch.from_numpy(
+                        state_dict[f"decoder_blocks.{level}.{conv_idx}.batch_norm.weight"] = torch.from_numpy(
+                            tf_weights[f"{bn_prefix}/gamma:0"]
+                        )
+                        state_dict[f"decoder_blocks.{level}.{conv_idx}.batch_norm.bias"] = torch.from_numpy(
+                            tf_weights[f"{bn_prefix}/beta:0"]
+                        )
+                        state_dict[f"decoder_blocks.{level}.{conv_idx}.batch_norm.running_mean"] = torch.from_numpy(
+                            tf_weights[f"{bn_prefix}/moving_mean:0"]
+                        )
+                        state_dict[f"decoder_blocks.{level}.{conv_idx}.batch_norm.running_var"] = torch.from_numpy(
                             tf_weights[f"{bn_prefix}/moving_variance:0"]
                         )
 
@@ -316,15 +297,13 @@ class UNet(nn.Module):
             state_dict = checkpoint["state_dict"]
         else:
             state_dict = checkpoint
-        self.load_state_dict(state_dict)
+        self.load_state_dict(drop_unknown_state_dict_keys(self, state_dict))
 
     def load_weights(self, model_path, *, prefix=None):
         model_path = str(model_path)
         if model_path.endswith(".h5"):
             if prefix is None:
-                raise ValueError(
-                    "prefix is required when loading .h5 TensorFlow weights"
-                )
+                raise ValueError("prefix is required when loading .h5 TensorFlow weights")
             self.load_from_tensorflow(model_path, prefix=prefix)
             return
         if model_path.endswith(".pt"):

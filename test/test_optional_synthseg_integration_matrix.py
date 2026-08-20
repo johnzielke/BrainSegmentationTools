@@ -119,7 +119,7 @@ def _unsupported_combo_reason(dtype_name: str, no_compile: bool) -> str | None:
         return reason
 
     try:
-        model = torch.nn.Conv3d(1, 1, kernel_size=3, padding=1).to(device=device, dtype=dtype)
+        model = torch.nn.Conv3d(1, 1, kernel_size=3, padding=1).to(device=torch.device(device), dtype=dtype)
         sample = torch.zeros((1, 1, 8, 8, 8), device=device, dtype=dtype)
         if not no_compile:
             model = torch.compile(model)

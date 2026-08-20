@@ -13,12 +13,8 @@ class _QCEncoderLevel(nn.Module):
     def __init__(self, in_channels: int, out_channels: int):
         super().__init__()
         self.conv0 = nn.Conv3d(in_channels, out_channels, kernel_size=5, padding="same")
-        self.conv1 = nn.Conv3d(
-            out_channels, out_channels, kernel_size=5, padding="same"
-        )
-        self.expand_conv = nn.Conv3d(
-            in_channels, out_channels, kernel_size=5, padding="same"
-        )
+        self.conv1 = nn.Conv3d(out_channels, out_channels, kernel_size=5, padding="same")
+        self.expand_conv = nn.Conv3d(in_channels, out_channels, kernel_size=5, padding="same")
         # Keras BatchNorm defaults to epsilon=1e-3.
         self.batch_norm = nn.BatchNorm3d(out_channels, eps=1e-3)
 
@@ -38,9 +34,7 @@ class QCSynthSegRegressor(nn.Module):
     def __init__(self, *, labels_segmentation: list[int], labels_qc: list[int]):
         super().__init__()
         if len(labels_segmentation) != len(labels_qc):
-            raise ValueError(
-                "labels_segmentation and labels_qc must have the same length"
-            )
+            raise ValueError("labels_segmentation and labels_qc must have the same length")
         self.n_labels_qc = int(max(labels_qc)) + 1
 
         self.encoder_levels = nn.ModuleList(
@@ -59,12 +53,8 @@ class QCSynthSegRegressor(nn.Module):
             ]
         )
         self.final_pool = nn.MaxPool3d(kernel_size=2, stride=2, ceil_mode=True)
-        self.final_conv_0 = nn.Conv3d(
-            192, self.n_labels_qc, kernel_size=5, padding="same"
-        )
-        self.final_conv_1 = nn.Conv3d(
-            self.n_labels_qc, self.n_labels_qc, kernel_size=5, padding="same"
-        )
+        self.final_conv_0 = nn.Conv3d(192, self.n_labels_qc, kernel_size=5, padding="same")
+        self.final_conv_1 = nn.Conv3d(self.n_labels_qc, self.n_labels_qc, kernel_size=5, padding="same")
 
         seg_idx_to_label = torch.as_tensor(labels_segmentation, dtype=torch.long)
         self.register_buffer("seg_idx_to_label", seg_idx_to_label)
@@ -77,9 +67,7 @@ class QCSynthSegRegressor(nn.Module):
     def _make_shape(self, seg_idx: torch.Tensor) -> torch.Tensor:
         # Mirrors FreeSurfer's MakeShape(224) used by SynthSeg QC.
         output = []
-        shape_target = torch.full(
-            (3,), self.TARGET_SHAPE, device=seg_idx.device, dtype=torch.long
-        )
+        shape_target = torch.full((3,), self.TARGET_SHAPE, device=seg_idx.device, dtype=torch.long)
         zero = torch.zeros(3, device=seg_idx.device, dtype=torch.long)
         for b in range(seg_idx.shape[0]):
             x = seg_idx[b]
@@ -92,9 +80,7 @@ class QCSynthSegRegressor(nn.Module):
                 max_idx = torch.minimum(shape, shape_target)
             else:
                 min_idx = torch.maximum(indices.min(dim=0).values.to(torch.long), zero)
-                max_idx = torch.minimum(
-                    indices.max(dim=0).values.to(torch.long) + 1, shape
-                )
+                max_idx = torch.minimum(indices.max(dim=0).values.to(torch.long) + 1, shape)
 
             intermediate_shape = max_idx - min_idx
             delta = shape_target - intermediate_shape
@@ -127,23 +113,17 @@ class QCSynthSegRegressor(nn.Module):
             output.append(x)
         return torch.stack(output, dim=0)
 
-    def _prepare_qc_input_from_segmentation(
-        self, segmentation: torch.Tensor
-    ) -> torch.Tensor:
+    def _prepare_qc_input_from_segmentation(self, segmentation: torch.Tensor) -> torch.Tensor:
         seg_idx = torch.argmax(segmentation, dim=1)
         seg_idx = self._make_shape(seg_idx)
         seg_idx_to_label = cast(torch.Tensor, self.seg_idx_to_label)
         seg_label_to_qc_label = cast(torch.Tensor, self.seg_label_to_qc_label)
         seg_labels = seg_idx_to_label[seg_idx]
         qc_labels = seg_label_to_qc_label[seg_labels]
-        qc_input = F.one_hot(qc_labels, num_classes=self.n_labels_qc).permute(
-            0, 4, 1, 2, 3
-        )
+        qc_input = F.one_hot(qc_labels, num_classes=self.n_labels_qc).permute(0, 4, 1, 2, 3)
         return qc_input.to(dtype=segmentation.dtype)
 
-    def predict_scores_from_segmentation(
-        self, segmentation: torch.Tensor
-    ) -> torch.Tensor:
+    def predict_scores_from_segmentation(self, segmentation: torch.Tensor) -> torch.Tensor:
         return self(self._prepare_qc_input_from_segmentation(segmentation))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -160,9 +140,7 @@ class QCSynthSegRegressor(nn.Module):
         try:
             import h5py
         except ImportError as e:
-            raise ImportError(
-                "h5py is required to load TensorFlow .h5 model weights"
-            ) from e
+            raise ImportError("h5py is required to load TensorFlow .h5 model weights") from e
 
         tf_weights: dict[str, np.ndarray] = {}
         with h5py.File(tf_model_path, "r") as f:
@@ -176,45 +154,30 @@ class QCSynthSegRegressor(nn.Module):
         state_dict = OrderedDict(self.state_dict())
         for level in range(len(self.encoder_levels)):
             for conv_name, conv_idx in [("conv0", 0), ("conv1", 1)]:
-                layer_prefix = (
-                    f"{prefix}_conv_downarm_{level}_{conv_idx}/"
-                    f"{prefix}_conv_downarm_{level}_{conv_idx}"
-                )
+                layer_prefix = f"{prefix}_conv_downarm_{level}_{conv_idx}/{prefix}_conv_downarm_{level}_{conv_idx}"
                 tf_name_conv = f"{layer_prefix}/kernel:0"
                 tf_name_bias = f"{layer_prefix}/bias:0"
                 weight = np.transpose(tf_weights[tf_name_conv], (4, 3, 0, 1, 2))
-                state_dict[f"encoder_levels.{level}.{conv_name}.weight"] = (
-                    torch.from_numpy(weight)
-                )
-                state_dict[f"encoder_levels.{level}.{conv_name}.bias"] = (
-                    torch.from_numpy(tf_weights[tf_name_bias])
-                )
+                state_dict[f"encoder_levels.{level}.{conv_name}.weight"] = torch.from_numpy(weight)
+                state_dict[f"encoder_levels.{level}.{conv_name}.bias"] = torch.from_numpy(tf_weights[tf_name_bias])
 
-            expand_prefix = (
-                f"{prefix}_expand_down_merge_{level}/{prefix}_expand_down_merge_{level}"
-            )
+            expand_prefix = f"{prefix}_expand_down_merge_{level}/{prefix}_expand_down_merge_{level}"
             expand_conv = f"{expand_prefix}/kernel:0"
             expand_bias = f"{expand_prefix}/bias:0"
             weight = np.transpose(tf_weights[expand_conv], (4, 3, 0, 1, 2))
-            state_dict[f"encoder_levels.{level}.expand_conv.weight"] = torch.from_numpy(
-                weight
-            )
-            state_dict[f"encoder_levels.{level}.expand_conv.bias"] = torch.from_numpy(
-                tf_weights[expand_bias]
-            )
+            state_dict[f"encoder_levels.{level}.expand_conv.weight"] = torch.from_numpy(weight)
+            state_dict[f"encoder_levels.{level}.expand_conv.bias"] = torch.from_numpy(tf_weights[expand_bias])
 
             bn_prefix = f"{prefix}_bn_down_{level}/{prefix}_bn_down_{level}"
             state_dict[f"encoder_levels.{level}.batch_norm.weight"] = torch.from_numpy(
                 tf_weights[f"{bn_prefix}/gamma:0"]
             )
-            state_dict[f"encoder_levels.{level}.batch_norm.bias"] = torch.from_numpy(
-                tf_weights[f"{bn_prefix}/beta:0"]
+            state_dict[f"encoder_levels.{level}.batch_norm.bias"] = torch.from_numpy(tf_weights[f"{bn_prefix}/beta:0"])
+            state_dict[f"encoder_levels.{level}.batch_norm.running_mean"] = torch.from_numpy(
+                tf_weights[f"{bn_prefix}/moving_mean:0"]
             )
-            state_dict[f"encoder_levels.{level}.batch_norm.running_mean"] = (
-                torch.from_numpy(tf_weights[f"{bn_prefix}/moving_mean:0"])
-            )
-            state_dict[f"encoder_levels.{level}.batch_norm.running_var"] = (
-                torch.from_numpy(tf_weights[f"{bn_prefix}/moving_variance:0"])
+            state_dict[f"encoder_levels.{level}.batch_norm.running_var"] = torch.from_numpy(
+                tf_weights[f"{bn_prefix}/moving_variance:0"]
             )
 
         for idx in [0, 1]:
@@ -223,9 +186,7 @@ class QCSynthSegRegressor(nn.Module):
             tf_name_bias = f"{layer_prefix}/bias:0"
             weight = np.transpose(tf_weights[tf_name_conv], (4, 3, 0, 1, 2))
             state_dict[f"final_conv_{idx}.weight"] = torch.from_numpy(weight)
-            state_dict[f"final_conv_{idx}.bias"] = torch.from_numpy(
-                tf_weights[tf_name_bias]
-            )
+            state_dict[f"final_conv_{idx}.bias"] = torch.from_numpy(tf_weights[tf_name_bias])
 
         self.load_state_dict(state_dict)
 

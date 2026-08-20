@@ -31,46 +31,32 @@ class ResampleForPrediction(transforms.Transform):
         data = dict(data)
         img = data[self.key]
         if not isinstance(img, MetaTensor):
-            raise TypeError(
-                f"Expected {self.key} to be of type MetaTensor, got {type(img)}"
-            )
+            raise TypeError(f"Expected {self.key} to be of type MetaTensor, got {type(img)}")
         if not img.ndim == 4:
-            raise ValueError(
-                f"Expected {self.key} to have 4 dimensions, got {img.ndim}"
-            )
+            raise ValueError(f"Expected {self.key} to have 4 dimensions, got {img.ndim}")
         if img.shape[0] != 1:
             for i in range(1, img.shape[0]):
                 if img[i] != img[0]:
                     raise ValueError(
-                        f"Expected {self.key} to have 1 channel, "
-                        f"got {img.shape[0]} non-identical channels"
+                        f"Expected {self.key} to have 1 channel, got {img.shape[0]} non-identical channels"
                     )
-            logger.warning(
-                f"Warning: {self.key} has {img.shape[0]} identical channels, "
-                "using the first one."
-            )
+            logger.warning(f"Warning: {self.key} has {img.shape[0]} identical channels, using the first one.")
             img = img[0:1]
         if any(torch.tensor(img.shape[1:]) <= 1):
-            raise ValueError(
-                f"Expected {self.key} to have sizes > 1, got {img.shape[1:]}"
-            )
+            raise ValueError(f"Expected {self.key} to have sizes > 1, got {img.shape[1:]}")
         pixdim = torch.linalg.norm(img.affine[:3, :3], dim=0)
-        if torch.any(
-            torch.abs(pixdim - self.target_pix_dim_tensor) > self.pix_dim_tolerance
-        ):
+        if torch.any(torch.abs(pixdim - self.target_pix_dim_tensor) > self.pix_dim_tolerance):
             factor = pixdim / self.target_pix_dim_tensor
             sigmas = 0.25 / factor
             sigmas[factor > 1] = 0  # don't blur if upsampling
             if torch.any(sigmas > 0):
-                img = transforms.GaussianSmooth(
-                    sigma=[float(s) for s in sigmas.tolist()]
-                )(img)
+                img = transforms.GaussianSmooth(sigma=[float(s) for s in sigmas.tolist()])(img)
             data[self.key] = self.spacing_transform(img)
         return data
 
 
 def get_pre_transforms(
-    synthseg_divisible_k, device="cpu", synthstrip=False, synthseg=True, ct=False
+    synthseg_divisible_k, device="cpu", synthstrip=False, synthseg=True, ct=False, contrast_prediction=False
 ):
     trans: list[transforms.Transform] = [
         transforms.LoadImaged(keys=["image"]),  # TODO: Handle multichannel
@@ -82,9 +68,7 @@ def get_pre_transforms(
             [
                 transforms.CopyItemsd(keys=["image"], names=["image_strip"]),
                 transforms.Orientationd(keys=["image_strip"], axcodes="LIA"),
-                ResampleForPrediction(
-                    key="image_strip", target_pix_dim=(1.0, 1.0, 1.0)
-                ),
+                ResampleForPrediction(key="image_strip", target_pix_dim=(1.0, 1.0, 1.0)),
                 transforms.ScaleIntensityRangePercentilesd(
                     keys=["image_strip"], lower=0, upper=99, b_min=0.0, b_max=1.0
                 ),
@@ -99,6 +83,13 @@ def get_pre_transforms(
                 # TODO: Crop
             ]
         )
+        if contrast_prediction:
+            trans.extend(
+                [
+                    transforms.CopyItemsd(keys=["image"], names=["image_contrast"]),
+                    transforms.NormalizeIntensityd(keys=["image_contrast"], nonzero=True, channel_wise=True),
+                ]
+            )
         if ct:
             trans.extend(
                 [
@@ -107,9 +98,7 @@ def get_pre_transforms(
             )
         trans.extend(
             [
-                transforms.ScaleIntensityRangePercentilesd(
-                    keys=["image"], lower=0.5, upper=99.5, b_min=0.0, b_max=1.0
-                ),
+                transforms.ScaleIntensityRangePercentilesd(keys=["image"], lower=0.5, upper=99.5, b_min=0.0, b_max=1.0),
                 # transforms.DivisiblePadd(keys=["image"], k=synthseg_divisible_k),
             ]
         )

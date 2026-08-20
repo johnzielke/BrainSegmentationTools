@@ -13,6 +13,7 @@ import numpy as np
 import torch
 from platformdirs import user_cache_dir
 
+from brain_segmentation_tools.easyreg.model import EasyRegDeformableNet
 from brain_segmentation_tools.qc_model import QCSynthSegRegressor
 from brain_segmentation_tools.unet_pytorch import UNet
 
@@ -47,9 +48,7 @@ class ModelManager:
         if cache_dir_from_env:
             self.cache_dir = Path(cache_dir_from_env).expanduser()
         else:
-            cache_root = Path(
-                user_cache_dir("brain_segmentation_tools", "brain_segmentation_tools")
-            )
+            cache_root = Path(user_cache_dir("brain_segmentation_tools", "brain_segmentation_tools"))
             self.cache_dir = cache_root / "models"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.dev_mode = self.freesurfer_root.exists() if dev_mode is None else dev_mode
@@ -150,6 +149,16 @@ class ModelManager:
                 content_hash="ce460ebf1479",
             ),
             ModelSpec(
+                model_name="easyreg",
+                model_type="deformable_field",
+                version="1.0",
+                framework="easyreg_deformable",
+                pt_filename="easyreg_deformable_field_1.0.pt",
+                download_url=None,
+                freesurfer_h5="mri_easyreg/easyreg_v10_230103.h5",
+                content_hash=None,
+            ),
+            ModelSpec(
                 model_name="synthstrip",
                 model_type="normal",
                 version="1",
@@ -169,6 +178,16 @@ class ModelManager:
                 freesurfer_pt="mri_synthstrip/synthstrip.nocsf.1.pt",
                 content_hash="805a73fdceb1",
             ),
+            ModelSpec(
+                model_name="contrast_classifier",
+                model_type="normal",
+                version="1",
+                framework="torch_state_dict",
+                pt_filename="contrast_classifier_1.pt",
+                download_url="https://github.com/johnzielke/BrainSegmentationToolsData/releases/download/models-v1/contrast_classifier_1.1d5e14b2362e.pt",
+                freesurfer_pt="mri_contrast_classifier/contrast_classifier.1.pt",
+                content_hash="1d5e14b2362e",
+            ),
         ]
 
     @property
@@ -178,15 +197,9 @@ class ModelManager:
     def get_spec(self, *, model_name: str, model_type: str, version: str) -> ModelSpec:
         clean_version = str(version).removeprefix("v")
         for spec in self._specs:
-            if (
-                spec.model_name == model_name
-                and spec.model_type == model_type
-                and spec.version == clean_version
-            ):
+            if spec.model_name == model_name and spec.model_type == model_type and spec.version == clean_version:
                 return spec
-        raise KeyError(
-            f"Model not configured: {model_name}:{model_type}:{clean_version}"
-        )
+        raise KeyError(f"Model not configured: {model_name}:{model_type}:{clean_version}")
 
     def get_model_path(
         self,
@@ -196,9 +209,7 @@ class ModelManager:
         version: str,
         allow_h5_in_dev: bool = True,
     ) -> Path:
-        spec = self.get_spec(
-            model_name=model_name, model_type=model_type, version=version
-        )
+        spec = self.get_spec(model_name=model_name, model_type=model_type, version=version)
 
         if self.dev_mode:
             dev_pt = self._dev_pt_path(spec)
@@ -250,13 +261,12 @@ class ModelManager:
         version: str,
         output_path: str | Path,
     ) -> Path:
-        spec = self.get_spec(
-            model_name=model_name, model_type=model_type, version=version
-        )
+        spec = self.get_spec(model_name=model_name, model_type=model_type, version=version)
         if spec.framework not in {
             "synthseg_unet",
             "synthseg_robust_unet",
             "synthseg_qc_regressor",
+            "easyreg_deformable",
         }:
             raise ValueError(f"{spec.key} is not an h5-backed model")
         h5_path = self._dev_h5_path(spec)
@@ -265,17 +275,13 @@ class ModelManager:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if spec.framework == "synthseg_robust_unet":
-            self._convert_robust_h5_to_pt(
-                spec=spec, h5_path=h5_path, output_pt_path=output_path
-            )
+            self._convert_robust_h5_to_pt(spec=spec, h5_path=h5_path, output_pt_path=output_path)
         elif spec.framework == "synthseg_qc_regressor":
-            self._convert_qc_h5_to_pt(
-                spec=spec, h5_path=h5_path, output_pt_path=output_path
-            )
+            self._convert_qc_h5_to_pt(spec=spec, h5_path=h5_path, output_pt_path=output_path)
+        elif spec.framework == "easyreg_deformable":
+            self._convert_easyreg_h5_to_pt(spec=spec, h5_path=h5_path, output_pt_path=output_path)
         else:
-            self._convert_unet_h5_to_pt(
-                spec=spec, h5_path=h5_path, output_pt_path=output_path
-            )
+            self._convert_unet_h5_to_pt(spec=spec, h5_path=h5_path, output_pt_path=output_path)
         return output_path
 
     def _dev_h5_path(self, spec: ModelSpec) -> Path | None:
@@ -310,9 +316,7 @@ class ModelManager:
         return sha256(path.read_bytes()).hexdigest()[:12]
 
     @staticmethod
-    def _download_pt(
-        url: str, target_path: Path, *, expected_hash: str | None = None
-    ) -> None:
+    def _download_pt(url: str, target_path: Path, *, expected_hash: str | None = None) -> None:
         target_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = target_path.with_suffix(target_path.suffix + ".tmp")
         try:
@@ -360,25 +364,19 @@ class ModelManager:
             temp_out.unlink()
         if dev_h5 is not None and dev_h5.exists():
             if spec.framework == "synthseg_robust_unet":
-                self._convert_robust_h5_to_pt(
-                    spec=spec, h5_path=dev_h5, output_pt_path=temp_out
-                )
+                self._convert_robust_h5_to_pt(spec=spec, h5_path=dev_h5, output_pt_path=temp_out)
             elif spec.framework == "synthseg_qc_regressor":
-                self._convert_qc_h5_to_pt(
-                    spec=spec, h5_path=dev_h5, output_pt_path=temp_out
-                )
+                self._convert_qc_h5_to_pt(spec=spec, h5_path=dev_h5, output_pt_path=temp_out)
+            elif spec.framework == "easyreg_deformable":
+                self._convert_easyreg_h5_to_pt(spec=spec, h5_path=dev_h5, output_pt_path=temp_out)
             else:
-                self._convert_unet_h5_to_pt(
-                    spec=spec, h5_path=dev_h5, output_pt_path=temp_out
-                )
+                self._convert_unet_h5_to_pt(spec=spec, h5_path=dev_h5, output_pt_path=temp_out)
             return temp_out
 
         return self._cached_pt_path(spec)
 
     @staticmethod
-    def _convert_unet_h5_to_pt(
-        *, spec: ModelSpec, h5_path: Path, output_pt_path: Path
-    ) -> None:
+    def _convert_unet_h5_to_pt(*, spec: ModelSpec, h5_path: Path, output_pt_path: Path) -> None:
         if spec.unet_kwargs is None:
             raise ValueError(f"Missing unet_kwargs in model config for {spec.key}")
         model = UNet(
@@ -394,9 +392,7 @@ class ModelManager:
         )
 
     @staticmethod
-    def _convert_robust_h5_to_pt(
-        *, spec: ModelSpec, h5_path: Path, output_pt_path: Path
-    ) -> None:
+    def _convert_robust_h5_to_pt(*, spec: ModelSpec, h5_path: Path, output_pt_path: Path) -> None:
         stage1 = UNet(
             nb_features=24,
             in_channels=1,
@@ -452,24 +448,14 @@ class ModelManager:
     @staticmethod
     def _load_labels(model_type: str, version: str) -> list[int]:
         module_version = f"v{str(version).replace('.', '_')}"
-        module = import_module(
-            f"brain_segmentation_tools.constants.{module_version}.{model_type}"
-        )
+        module = import_module(f"brain_segmentation_tools.constants.{module_version}.{model_type}")
         return list(module.RESOURCE["labels"])
 
     @staticmethod
-    def _convert_qc_h5_to_pt(
-        *, spec: ModelSpec, h5_path: Path, output_pt_path: Path
-    ) -> None:
-        labels_segmentation = np.asarray(
-            ModelManager._load_labels("segmentation", spec.version), dtype=np.int32
-        )
-        labels_qc = np.asarray(
-            ModelManager._load_labels("qc", spec.version), dtype=np.int32
-        )
-        labels_segmentation, unique_idx = np.unique(
-            labels_segmentation, return_index=True
-        )
+    def _convert_qc_h5_to_pt(*, spec: ModelSpec, h5_path: Path, output_pt_path: Path) -> None:
+        labels_segmentation = np.asarray(ModelManager._load_labels("segmentation", spec.version), dtype=np.int32)
+        labels_qc = np.asarray(ModelManager._load_labels("qc", spec.version), dtype=np.int32)
+        labels_segmentation, unique_idx = np.unique(labels_segmentation, return_index=True)
         labels_qc = labels_qc[unique_idx]
         model = QCSynthSegRegressor(
             labels_segmentation=labels_segmentation.tolist(),
@@ -480,6 +466,22 @@ class ModelManager:
             {
                 "state_dict": model.state_dict(),
                 "metadata": ModelManager._checkpoint_metadata(spec),
+            },
+            output_pt_path,
+        )
+
+    @staticmethod
+    def _convert_easyreg_h5_to_pt(*, spec: ModelSpec, h5_path: Path, output_pt_path: Path) -> None:
+        model = EasyRegDeformableNet()
+        model.load_from_tensorflow(h5_path.as_posix())
+        torch.save(
+            {
+                "state_dict": {"easyreg_model": model.state_dict()},
+                "metadata": {
+                    **ModelManager._checkpoint_metadata(spec),
+                    "source_h5": h5_path.as_posix(),
+                    "conversion_status": "loaded_from_tensorflow_h5",
+                },
             },
             output_pt_path,
         )
@@ -496,10 +498,7 @@ class ModelManager:
     @staticmethod
     def _extract_state_dict(checkpoint: Any) -> Any:
         if not isinstance(checkpoint, dict):
-            raise TypeError(
-                "Expected checkpoint to be a dict or state_dict mapping, "
-                f"got {type(checkpoint).__name__}"
-            )
+            raise TypeError(f"Expected checkpoint to be a dict or state_dict mapping, got {type(checkpoint).__name__}")
 
         for key in ("state_dict", "model_state_dict"):
             if key in checkpoint:
@@ -519,8 +518,7 @@ class ModelManager:
             return False
 
         return all(
-            isinstance(value, torch.Tensor)
-            or ModelManager._looks_like_nested_state_dict(value)
+            isinstance(value, torch.Tensor) or ModelManager._looks_like_nested_state_dict(value)
             for value in candidate.values()
         )
 

@@ -8,21 +8,15 @@ import torch
 from brain_segmentation_tools.model_manager import ModelManager
 
 
-def test_model_manager_uses_env_cache_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_model_manager_uses_env_cache_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     custom_cache_dir = tmp_path / "custom-model-cache"
-    monkeypatch.setenv(
-        ModelManager.MODEL_CACHE_DIR_ENV_VAR, custom_cache_dir.as_posix()
-    )
+    monkeypatch.setenv(ModelManager.MODEL_CACHE_DIR_ENV_VAR, custom_cache_dir.as_posix())
     manager = ModelManager(dev_mode=False)
     assert manager.cache_dir == custom_cache_dir
     assert manager.cache_dir.exists()
 
 
-def test_model_download_and_cache_reuse(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_model_download_and_cache_reuse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     model_name = "synthstrip"
     model_type = "normal"
     version = "1"
@@ -34,17 +28,13 @@ def test_model_download_and_cache_reuse(
     download_calls: list[tuple[str, Path]] = []
     original_download = ModelManager._download_pt
 
-    def wrapped_download(
-        url: str, target_path: Path, *, expected_hash: str | None = None
-    ) -> None:
+    def wrapped_download(url: str, target_path: Path, *, expected_hash: str | None = None) -> None:
         download_calls.append((url, Path(target_path)))
         original_download(url, target_path, expected_hash=expected_hash)
 
     monkeypatch.setattr(ModelManager, "_download_pt", staticmethod(wrapped_download))
 
-    spec = manager.get_spec(
-        model_name=model_name, model_type=model_type, version=version
-    )
+    spec = manager.get_spec(model_name=model_name, model_type=model_type, version=version)
 
     try:
         first_path = manager.get_model_path(
@@ -55,10 +45,7 @@ def test_model_download_and_cache_reuse(
         )
     except RuntimeError as exc:
         if "Failed downloading model" in str(exc):
-            pytest.skip(
-                "Network unavailable or model host unreachable; "
-                "skipping download/cache integration test"
-            )
+            pytest.skip("Network unavailable or model host unreachable; skipping download/cache integration test")
         raise
 
     assert first_path.exists()
@@ -126,9 +113,7 @@ def test_get_model_state_dict_extracts_reference_synthstrip_payload(
         assert torch.equal(state_dict[key], tensor)
 
 
-def test_get_model_state_dict_uses_model_path_not_conversion(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_get_model_state_dict_uses_model_path_not_conversion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     manager = ModelManager(dev_mode=False)
     checkpoint_path = tmp_path / "wrapped_checkpoint.pt"
     expected_state_dict = {
@@ -155,9 +140,7 @@ def test_get_model_state_dict_uses_model_path_not_conversion(
     assert torch.equal(state_dict["weight"], expected_state_dict["weight"])
 
 
-def test_to_pt_wraps_synthstrip_checkpoint_with_metadata(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_to_pt_wraps_synthstrip_checkpoint_with_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     manager = ModelManager(dev_mode=False)
     manager.cache_dir = tmp_path / "models"
     manager.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -206,9 +189,7 @@ def test_to_pt_wraps_synthstrip_checkpoint_with_metadata(
         ("qc", "mri_synthseg/synthseg_qc_2.0.h5"),
     ],
 )
-def test_model_manager_has_expected_synthseg_v2_h5_specs(
-    model_type: str, expected_h5: str
-) -> None:
+def test_model_manager_has_expected_synthseg_v2_h5_specs(model_type: str, expected_h5: str) -> None:
     spec = ModelManager(dev_mode=True).get_spec(
         model_name="synthseg",
         model_type=model_type,

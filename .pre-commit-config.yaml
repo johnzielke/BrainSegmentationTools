@@ -11,6 +11,7 @@ repos:
         name: ty check
         entry: uv run ty check # or simply 'ty check' if in an activated venv
         language: system
+        exclude: '^dev/'
         types: [python]
         pass_filenames: true
 

@@ -63,18 +63,21 @@ def _to_backend_array(tensor: torch.Tensor):
 
 def _backend_any(array, axis=0):
     if _is_cupy_array(array):
+        assert cp is not None
         return cp.any(array, axis=axis)
     return np.any(array, axis=axis)
 
 
 def _backend_ascontiguousarray(array):
     if _is_cupy_array(array):
+        assert cp is not None
         return cp.ascontiguousarray(array)
     return np.ascontiguousarray(array)
 
 
 def _backend_argmax(array):
     if _is_cupy_array(array):
+        assert cp is not None
         return array.argmax(axis=0, dtype=cp.int8)
     return array.argmax(axis=0)
 
@@ -116,6 +119,8 @@ def get_largest_connected_component(mask, structure=None):
     :param structure: numpy array defining the connectivity.
     """
     if _is_cupy_array(mask):
+        assert cp is not None
+        assert cucim_label is not None
         components, n_components = cucim_label(mask, return_num=True)
         if n_components == 0:
             return mask.copy()

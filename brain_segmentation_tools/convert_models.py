@@ -12,9 +12,7 @@ class ModelConversionCLI:
     def list_models(self):
         return [spec.key for spec in self.manager.configured_models]
 
-    def convert_h5_to_pt(
-        self, *, model_name: str, model_type: str, version: str, output_path: str
-    ):
+    def convert_h5_to_pt(self, *, model_name: str, model_type: str, version: str, output_path: str):
         out_path = self.manager.convert_h5_to_pt(
             model_name=model_name,
             model_type=model_type,

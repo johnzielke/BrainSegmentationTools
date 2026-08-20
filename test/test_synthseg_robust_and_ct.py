@@ -26,9 +26,7 @@ def _read_csv(path: Path) -> list[list[str]]:
         return list(csv.reader(f))
 
 
-def _assert_qc_csv_matches_oracle(
-    actual_path: Path, oracle_path: Path, *, atol: float = 0.005
-) -> None:
+def _assert_qc_csv_matches_oracle(actual_path: Path, oracle_path: Path, *, atol: float = 0.005) -> None:
     actual_rows = _read_csv(actual_path)
     oracle_rows = _read_csv(oracle_path)
     assert len(actual_rows) == len(oracle_rows)
@@ -68,9 +66,7 @@ def test_synthseg_matches_oracle_for_robust_and_parcellation_combos(
         version="v2.0",
         parcellation=bool(parcellation),
         robust=bool(robust),
-        qc=(
-            tmp_path / f"synthseg_robust_{robust}_parc_{parcellation}_qc.csv"
-        ).as_posix(),
+        qc=(tmp_path / f"synthseg_robust_{robust}_parc_{parcellation}_qc.csv").as_posix(),
         no_compile=True,
         dev_mode=False,
         crop_segmentation_input_to_brain_mask=False,
@@ -86,9 +82,7 @@ def test_synthseg_matches_oracle_for_robust_and_parcellation_combos(
     assert output_path.exists()
     assert qc_output_path.exists()
 
-    oracle_path = (
-        ORACLE_DIR / f"synthseg_oracle_robust_{robust}_parc_{parcellation}.nii.gz"
-    )
+    oracle_path = ORACLE_DIR / f"synthseg_oracle_robust_{robust}_parc_{parcellation}.nii.gz"
     expected_data, expected_affine = load_nifti(oracle_path)
     actual_data, actual_affine = load_nifti(output_path)
 
@@ -106,9 +100,7 @@ def test_synthseg_matches_oracle_for_robust_and_parcellation_combos(
     assert voxel_accuracy >= SEGMENTATION_MIN_VOXEL_ACCURACY
     assert foreground_dice >= SEGMENTATION_MIN_FOREGROUND_DICE
 
-    oracle_qc_path = (
-        ORACLE_DIR / f"synthseg_oracle_robust_{robust}_parc_{parcellation}_qc.csv"
-    )
+    oracle_qc_path = ORACLE_DIR / f"synthseg_oracle_robust_{robust}_parc_{parcellation}_qc.csv"
     _assert_qc_csv_matches_oracle(qc_output_path, oracle_qc_path)
 
 

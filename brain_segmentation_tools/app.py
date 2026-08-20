@@ -8,6 +8,8 @@ from typing import Any, cast
 
 import numpy as np
 import torch
+import torch._dynamo
+import torch._dynamo.config
 from fire import Fire
 from monai import transforms
 from monai.data import Dataset, MetaTensor, ThreadDataLoader
@@ -15,11 +17,12 @@ from monai.transforms.utils import generate_spatial_bounding_box
 from tqdm import tqdm
 
 from brain_segmentation_tools import postprocessing, preprocessing, utils
+from brain_segmentation_tools.contrast_classifier import ContrastClassificationModel
 from brain_segmentation_tools.model_manager import ModelManager
 from brain_segmentation_tools.synthseg import Synthseg
 from brain_segmentation_tools.synthstrip import StripModel
 
-torch._dynamo.config.capture_scalar_outputs = True
+torch._dynamo.config.capture_scalar_outputs = True  # ty: ignore[invalid-assignment]
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 
@@ -31,6 +34,7 @@ class Application:
     ct: bool = False
     vol: str | None = None
     qc: str | None = None
+    contrast: bool = False
     crop: list[int] | None = None
     version: str = "v2.0"
     dev_mode: bool | None = None
@@ -45,6 +49,7 @@ class Application:
     names_qc: np.ndarray = field(init=False)
     _synthseg_model: Synthseg | None = field(init=False, default=None)
     _synthstrip_model: StripModel | None = field(init=False, default=None)
+    _contrast_model: ContrastClassificationModel | None = field(init=False, default=None)
     model_manager: ModelManager = field(init=False)
     topology_classes: np.ndarray = field(init=False)
     output_extension: str = ".nii.gz"
@@ -124,7 +129,7 @@ class Application:
             do_qc=bool(self.qc),
             flip_indices=self.flip_indices,
         )
-        self._synthseg_model = self._synthseg_model.to(self.device, dtype=self.dtype)
+        self._synthseg_model = self._synthseg_model.to(torch.device(self.device), dtype=self.dtype)
         self._synthseg_model.eval()
         if not self.no_compile:
             self._synthseg_model = cast(Synthseg, torch.compile(self._synthseg_model))
@@ -142,12 +147,29 @@ class Application:
                 version="1",
             )
         )
-        self._synthstrip_model = self._synthstrip_model.to(self.device, dtype=self.dtype)
+        self._synthstrip_model = self._synthstrip_model.to(torch.device(self.device), dtype=self.dtype)
         self._synthstrip_model.eval()
         if not self.no_compile:
             self._synthstrip_model = cast(StripModel, torch.compile(self._synthstrip_model))
 
         return self._synthstrip_model
+
+    @property
+    def contrast_model(self):
+        if self._contrast_model is not None:
+            return self._contrast_model
+        contrast_model_file = self.model_manager.get_model_path(
+            model_name="contrast_classifier",
+            model_type="normal",
+            version="1",
+            allow_h5_in_dev=True,
+        )
+        self._contrast_model = ContrastClassificationModel(contrast_model_file)
+        self._contrast_model = self._contrast_model.to(torch.device(self.device), dtype=self.dtype)
+        self._contrast_model.eval()
+        if not self.no_compile:
+            self._contrast_model = cast(ContrastClassificationModel, torch.compile(self._contrast_model))
+        return self._contrast_model
 
     def _empty_synthseg_results(self, image_tensor):
         qc_scores = None
@@ -171,15 +193,21 @@ class Application:
             row = {"segmentation": segmentation_final_labels}
             if qc_scores is not None:
                 row["qc_scores"] = qc_scores.clone()
+            if self.contrast:
+                row["contrast_probability"] = 0.0
+                row["is_contrast"] = False
             results.append(row)
         return results
 
     @torch.inference_mode()
-    def predict_synthseg_batch(self, image_tensor, brain_mask=None):
+    def predict_synthseg_batch(self, image_tensor, brain_mask=None, contrast_image_tensor=None):
         """
         image_tensor: A batch of images to segment. Shape (B, C, H, W, D)
         brain_mask: Optional batch of brain masks used to crop inputs.
             Shape (H, W, D)
+        contrast_image_tensor: Optional batch of images normalized for the
+            contrast classifier (not percentile-clipped like image_tensor).
+            Shape (B, C, H, W, D)
         """
         original_image_tensor = image_tensor
         if brain_mask is not None:
@@ -194,6 +222,14 @@ class Application:
                 bbox_start[1] : bbox_end[1],
                 bbox_start[2] : bbox_end[2],
             ]
+            if contrast_image_tensor is not None:
+                contrast_image_tensor = contrast_image_tensor[
+                    :,
+                    :,
+                    bbox_start[0] : bbox_end[0],
+                    bbox_start[1] : bbox_end[1],
+                    bbox_start[2] : bbox_end[2],
+                ]
         segmentation, parcellation, qc_scores = self.synthseg_model(image_tensor.to(self.device, dtype=self.dtype))
 
         results = []
@@ -209,6 +245,15 @@ class Application:
                 labels_segmentation=self.labels_segmentation,
                 labels_parcellation=self.labels_parcellation,
             )
+            contrast_probability = None
+            if self.contrast:
+                if contrast_image_tensor is None:
+                    raise ValueError("contrast_image_tensor is required when contrast=True")
+                # Classify on the normalized input at the same crop used for segmentation.
+                contrast_input_image = contrast_image_tensor[i : i + 1].to(self.device, dtype=self.dtype)
+                contrast_probability = self.contrast_model(
+                    contrast_input_image, segmentation_final_labels[None, None]
+                ).item()
             if brain_mask is not None:
                 # Pad the segmentation back to the original size
                 segmentation_final_labels_ = torch.zeros(
@@ -229,6 +274,10 @@ class Application:
             row["segmentation"] = segmentation_final_labels
             if qc_scores is not None:
                 row["qc_scores"] = qc_scores[i]
+            if self.contrast:
+                assert contrast_probability is not None
+                row["contrast_probability"] = contrast_probability
+                row["is_contrast"] = contrast_probability >= 0.5
             results.append(row)
         return results
 
@@ -297,7 +346,7 @@ class Application:
         if do_qc:
             if not do_segmentation:
                 raise ValueError("qc output requires segmentation_out")
-            qc_output_path = Path(cast(str, self.qc))
+            qc_output_path = Path(self.qc)
             if qc_output_path.suffix.lower() != ".csv":
                 qc_output_path = qc_output_path.with_suffix(".csv")
             self._write_qc_header(qc_output_path)
@@ -380,7 +429,7 @@ class Application:
                     extended_brain_mask_out_paths.append(
                         Path(brain_mask_out_path) if brain_mask_out_path is not None else None
                     )
-        input_paths = extended_input_paths
+        input_paths = [path.as_posix() for path in extended_input_paths]
         segmentation_out_paths = extended_segmentation_out_paths
         brain_mask_out_paths = extended_brain_mask_out_paths
         if ids is None:
@@ -424,12 +473,13 @@ class Application:
             synthstrip=do_brain_mask,
             synthseg=do_segmentation,
             ct=self.ct,
+            contrast_prediction=self.contrast,
         )
         dataset = utils.ErrorCatchingDataset(
             Dataset(
                 [
                     {
-                        "image": image.as_posix(),
+                        "image": Path(image).as_posix(),
                         "output": output.as_posix() if output is not None else "",
                         "brain_mask_output": brain_mask_out.as_posix() if brain_mask_out is not None else "",
                         "id": id,
@@ -448,7 +498,7 @@ class Application:
         assert self.BATCH_SIZE == 1, "Batch size must be 1 for the pipeline logic"
         dataloader = ThreadDataLoader(dataset, batch_size=self.BATCH_SIZE, use_thread_workers=True, num_workers=4)
         saver = transforms.SaveImage(output_ext=self.output_extension, print_log=False)
-        progress: tqdm[Any] | None = tqdm(dataloader) if use_prog_bar else None
+        progress: tqdm | None = tqdm(dataloader) if use_prog_bar else None
         data_iterable = progress if progress is not None else dataloader
         for data in data_iterable:
             # TODO: Use brain mask to crop segmentation input.
@@ -499,11 +549,14 @@ class Application:
             if do_segmentation:
                 try:
                     synthseg_input = data["image"]
+                    contrast_input = data["image_contrast"] if self.contrast else None
                     brain_mask = None
                     if self.crop_segmentation_input_to_brain_mask:
                         assert len(brain_masks) == 1, "Batch size must be 1 when cropping to brain mask"
                         brain_mask = brain_masks[0]["brain_mask"]
-                    segmentations = self.predict_synthseg_batch(synthseg_input, brain_mask=brain_mask)
+                    segmentations = self.predict_synthseg_batch(
+                        synthseg_input, brain_mask=brain_mask, contrast_image_tensor=contrast_input
+                    )
                     del synthseg_input
                 except KeyboardInterrupt:
                     raise
@@ -519,6 +572,9 @@ class Application:
                         filename=output_path,
                     )
                     item_result["synthseg"] = output_path + self.output_extension
+                    if self.contrast:
+                        item_result["contrast_probability"] = segmentations[i]["contrast_probability"]
+                        item_result["is_contrast"] = segmentations[i]["is_contrast"]
                     if do_qc and qc_output_path is not None:
                         self._append_qc_row(
                             qc_output_path=qc_output_path,

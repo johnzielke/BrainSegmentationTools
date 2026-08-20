@@ -67,7 +67,8 @@ def install_test_models(cache_dir: Path, requests: list[ModelRequest]) -> None:
                 pytest.skip(
                     f"Missing local or cached source for {spec.key}: {exc}",
                 )
-            shutil.copy2(source, target)
+            if Path(source).resolve() != target.resolve():
+                shutil.copy2(source, target)
             continue
 
         try:
