@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pytest
@@ -26,16 +27,14 @@ def _read_csv(path: Path) -> list[list[str]]:
         return list(csv.reader(f))
 
 
-def _assert_qc_csv_matches_oracle(actual_path: Path, oracle_path: Path, *, atol: float = 0.005) -> None:
-    actual_rows = _read_csv(actual_path)
+def _assert_qc_matches_oracle(
+    labels: list[str], scores: list[float], oracle_path: Path, *, atol: float = 0.005
+) -> None:
     oracle_rows = _read_csv(oracle_path)
-    assert len(actual_rows) == len(oracle_rows)
-    assert actual_rows[0] == oracle_rows[0]
-    for actual_row, oracle_row in zip(actual_rows[1:], oracle_rows[1:], strict=True):
-        assert actual_row[0] == oracle_row[0]
-        actual_scores = np.asarray(actual_row[1:], dtype=np.float32)
-        oracle_scores = np.asarray(oracle_row[1:], dtype=np.float32)
-        assert np.allclose(actual_scores, oracle_scores, atol=atol)
+    oracle_labels = oracle_rows[0][1:]
+    oracle_scores = np.asarray(oracle_rows[1][1:], dtype=np.float32)
+    assert labels == oracle_labels
+    assert np.allclose(np.asarray(scores, dtype=np.float32), oracle_scores, atol=atol)
 
 
 @pytest.mark.parametrize("robust,parcellation", [(0, 0), (0, 1), (1, 0), (1, 1)])
@@ -66,21 +65,24 @@ def test_synthseg_matches_oracle_for_robust_and_parcellation_combos(
         version="v2.0",
         parcellation=bool(parcellation),
         robust=bool(robust),
-        qc=(tmp_path / f"synthseg_robust_{robust}_parc_{parcellation}_qc.csv").as_posix(),
+        qc=True,
         no_compile=True,
         dev_mode=False,
         crop_segmentation_input_to_brain_mask=False,
     )
 
     output_path = tmp_path / f"synthseg_robust_{robust}_parc_{parcellation}.nii.gz"
-    qc_output_path = tmp_path / f"synthseg_robust_{robust}_parc_{parcellation}_qc.csv"
+    qc_results: list[dict[str, object]] = []
     app.run(
         input_paths=(TEST_RES_DIR / "spgr_unstrip.nii.gz").as_posix(),
         segmentation_out=output_path.as_posix(),
+        callback=qc_results.append,
         use_prog_bar=False,
     )
     assert output_path.exists()
-    assert qc_output_path.exists()
+    assert len(qc_results) == 1
+    assert "qc_scores" in qc_results[0]
+    assert "qc_labels" in qc_results[0]
 
     oracle_path = ORACLE_DIR / f"synthseg_oracle_robust_{robust}_parc_{parcellation}.nii.gz"
     expected_data, expected_affine = load_nifti(oracle_path)
@@ -101,7 +103,11 @@ def test_synthseg_matches_oracle_for_robust_and_parcellation_combos(
     assert foreground_dice >= SEGMENTATION_MIN_FOREGROUND_DICE
 
     oracle_qc_path = ORACLE_DIR / f"synthseg_oracle_robust_{robust}_parc_{parcellation}_qc.csv"
-    _assert_qc_csv_matches_oracle(qc_output_path, oracle_qc_path)
+    _assert_qc_matches_oracle(
+        cast(list[str], qc_results[0]["qc_labels"]),
+        cast(list[float], qc_results[0]["qc_scores"]),
+        oracle_qc_path,
+    )
 
 
 def test_ct_clipping_matches_freesurfer_range() -> None:

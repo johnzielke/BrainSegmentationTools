@@ -1,4 +1,3 @@
-import csv
 import os
 import traceback
 from collections.abc import Callable
@@ -33,7 +32,7 @@ class Application:
     fast: bool = False
     ct: bool = False
     vol: str | None = None
-    qc: str | None = None
+    qc: bool = False
     contrast: bool = False
     crop: list[int] | None = None
     version: str = "v2.0"
@@ -281,28 +280,9 @@ class Application:
             results.append(row)
         return results
 
-    @staticmethod
-    def _subject_id_for_qc(path: str) -> str:
-        name = Path(path).name
-        for suffix in [".nii.gz", ".nii", ".mgz", ".npz"]:
-            if name.endswith(suffix):
-                return name.removesuffix(suffix)
-        return Path(name).stem
-
-    def _qc_headers(self) -> list[str]:
+    def _qc_labels(self) -> list[str]:
         _, unique_idx = np.unique(self.labels_qc, return_index=True)
         return self.names_qc[unique_idx].tolist()[1:]
-
-    def _write_qc_header(self, qc_output_path: Path) -> None:
-        qc_output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(qc_output_path, "w", newline="") as f:
-            csv.writer(f).writerow(["subject", *self._qc_headers()])
-
-    def _append_qc_row(self, *, qc_output_path: Path, input_image_path: str, qc_scores: torch.Tensor) -> None:
-        scores = np.clip(np.squeeze(qc_scores.detach().float().cpu().numpy())[1:], 0.0, 1.0)
-        row = [self._subject_id_for_qc(input_image_path)] + [f"{score:.4f}" for score in scores]
-        with open(qc_output_path, "a", newline="") as f:
-            csv.writer(f).writerow(row)
 
     @torch.inference_mode()
     def predict_synthstrip_batch(self, data):
@@ -341,15 +321,9 @@ class Application:
     ):
         do_segmentation = segmentation_out is not None
         do_brain_mask = brain_mask_out is not None
-        do_qc = self.qc is not None
-        qc_output_path = None
-        if do_qc:
-            if not do_segmentation:
-                raise ValueError("qc output requires segmentation_out")
-            qc_output_path = Path(self.qc)
-            if qc_output_path.suffix.lower() != ".csv":
-                qc_output_path = qc_output_path.with_suffix(".csv")
-            self._write_qc_header(qc_output_path)
+        do_qc = self.qc
+        if do_qc and not do_segmentation:
+            raise ValueError("qc requires segmentation_out")
         if isinstance(input_paths, str) and Path(input_paths).is_file() and input_paths.endswith(".txt"):
             input_paths = list(Path(input_paths).read_text().splitlines())
         input_paths = input_paths if isinstance(input_paths, list) else [input_paths]
@@ -469,10 +443,7 @@ class Application:
             print(f"Skipping {sum(existing_outputs)} existing segmentations")
         preprocessing_transform = preprocessing.get_pre_transforms(
             synthseg_divisible_k=Synthseg.SYNTHSEG_DIVISIBLE_K,
-            # Preprocess on CPU inside the DataLoader workers; the predict methods move data to
-            # self.device. This avoids a CUDA context per worker and the "sharing CUDA metatensor
-            # across processes not implemented" error when workers are processes.
-            device="cpu",
+            device=self.device,
             synthstrip=do_brain_mask,
             synthseg=do_segmentation,
             ct=self.ct,
@@ -578,14 +549,14 @@ class Application:
                     if self.contrast:
                         item_result["contrast_probability"] = segmentations[i]["contrast_probability"]
                         item_result["is_contrast"] = segmentations[i]["is_contrast"]
-                    if do_qc and qc_output_path is not None:
-                        self._append_qc_row(
-                            qc_output_path=qc_output_path,
-                            input_image_path=input_image_path,
-                            qc_scores=segmentations[i]["qc_scores"],
+                    if do_qc:
+                        scores = np.clip(
+                            np.squeeze(segmentations[i]["qc_scores"].detach().float().cpu().numpy())[1:],
+                            0.0,
+                            1.0,
                         )
-                        item_result["qc"] = segmentations[i]["qc_scores"]
-                        item_result["qc_output"] = qc_output_path.as_posix()
+                        item_result["qc_scores"] = scores.tolist()
+                        item_result["qc_labels"] = self._qc_labels()
             if callback is not None:
                 callback(item_result)
 

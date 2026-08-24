@@ -26,7 +26,7 @@ Common options supported by the `Application` CLI include:
 
 - `--parcellation=True` to add cortical parcellation
 - `--robust=True` to use the robust SynthSeg v2.0 model
-- `--qc=path/to/qc.csv` to write per-subject QC scores
+- `--qc=True` to compute per-region QC scores (returned via the run callback as `qc_scores`/`qc_labels`)
 - `--brain_mask_out=...` to save a SynthStrip mask
 - `--ct=True` to apply CT intensity clipping before inference
 - `--device=cpu` or `--device=cuda`
@@ -68,7 +68,7 @@ Enable parcellation, robust mode, and QC output:
 ```bash
 BRAIN_SEGMENTATION_TOOLS_MODEL_CACHE_DIR=build/model_cache \
 uv run synthseg --parcellation=True --robust=True \
-  --qc=build/out/qc.csv \
+  --qc=True \
   run path/to/scan.nii.gz \
   --segmentation_out=build/out/scan_seg.nii.gz
 ```
