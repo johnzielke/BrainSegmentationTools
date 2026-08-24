@@ -36,7 +36,7 @@ class ResampleForPrediction(transforms.Transform):
             raise ValueError(f"Expected {self.key} to have 4 dimensions, got {img.ndim}")
         if img.shape[0] != 1:
             for i in range(1, img.shape[0]):
-                if img[i] != img[0]:
+                if not torch.equal(img[i], img[0]):
                     raise ValueError(
                         f"Expected {self.key} to have 1 channel, got {img.shape[0]} non-identical channels"
                     )
@@ -102,5 +102,14 @@ def get_pre_transforms(
                 # transforms.DivisiblePadd(keys=["image"], k=synthseg_divisible_k),
             ]
         )
+
+    # Move outputs back to CPU so DataLoader worker processes never pickle CUDA MetaTensors across
+    # the process boundary (which raises "sharing CUDA metatensor across processes not implemented").
+    output_keys = ["image"]
+    if synthstrip:
+        output_keys.append("image_strip")
+    if synthseg and contrast_prediction:
+        output_keys.append("image_contrast")
+    trans.append(transforms.ToDeviced(keys=output_keys, device="cpu"))
 
     return transforms.Compose(trans)

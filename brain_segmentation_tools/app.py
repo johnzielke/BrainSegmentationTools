@@ -22,7 +22,7 @@ from brain_segmentation_tools.model_manager import ModelManager
 from brain_segmentation_tools.synthseg import Synthseg
 from brain_segmentation_tools.synthstrip import StripModel
 
-torch._dynamo.config.capture_scalar_outputs = True  # ty: ignore[invalid-assignment]
+torch._dynamo.config.capture_scalar_outputs = True
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 
@@ -469,7 +469,10 @@ class Application:
             print(f"Skipping {sum(existing_outputs)} existing segmentations")
         preprocessing_transform = preprocessing.get_pre_transforms(
             synthseg_divisible_k=Synthseg.SYNTHSEG_DIVISIBLE_K,
-            device=self.device,
+            # Preprocess on CPU inside the DataLoader workers; the predict methods move data to
+            # self.device. This avoids a CUDA context per worker and the "sharing CUDA metatensor
+            # across processes not implemented" error when workers are processes.
+            device="cpu",
             synthstrip=do_brain_mask,
             synthseg=do_segmentation,
             ct=self.ct,
