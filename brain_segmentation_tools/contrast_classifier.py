@@ -102,8 +102,21 @@ class ContrastClassificationModel(nn.Module):
 
     def forward(self, image: torch.Tensor, seg: torch.Tensor) -> torch.Tensor:
         """`image`/`seg`: (B, 1, H, W, D) at native (unpooled) resolution."""
-        image = F.max_pool3d(image.float(), self.pool_factor)
-        seg = F.max_pool3d(seg.float(), self.pool_factor)
+        image = image.float()
+        seg = seg.float()
+        # The network downsamples by pool_factor * 2**num_blocks; pad so no spatial
+        # axis collapses to zero for thin/small crops.
+        min_size = self.pool_factor * 2 ** len(self.net.features)
+        pad = []
+        for dim in reversed(image.shape[2:]):
+            deficit = max(0, min_size - dim)
+            pad.extend([deficit // 2, deficit - deficit // 2])
+        if any(pad):
+            image = F.pad(image, pad)
+            seg = F.pad(seg, pad)
+
+        image = F.max_pool3d(image, self.pool_factor)
+        seg = F.max_pool3d(seg, self.pool_factor)
 
         # image = F.interpolate(image, size=self.image_size, mode="trilinear", align_corners=False)
         # seg = F.interpolate(seg, size=self.image_size, mode="nearest")

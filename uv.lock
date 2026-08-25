@@ -9,7 +9,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-08-17T22:34:17.355511106Z"
+exclude-newer = "2026-08-18T22:46:01.056088584Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -18,7 +18,7 @@ torch = false
 
 [[package]]
 name = "brain-segmentation-tools"
-version = "0.3.0"
+version = "0.3.1"
 source = { editable = "." }
 dependencies = [
     { name = "cucim-cu12", version = "26.2.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
