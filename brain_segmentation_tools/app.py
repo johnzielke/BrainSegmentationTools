@@ -10,8 +10,10 @@ import torch
 import torch._dynamo
 import torch._dynamo.config
 from fire import Fire
+from loguru import logger
 from monai import transforms
 from monai.data import Dataset, MetaTensor, ThreadDataLoader
+from monai.inferers import sliding_window_inference
 from monai.transforms.utils import generate_spatial_bounding_box
 from tqdm import tqdm
 
@@ -59,6 +61,13 @@ class Application:
     brain_mask_exclude_csf: bool = False
     brain_mask_border: int = 1
     crop_segmentation_input_to_brain_mask: bool = True
+
+    # SynthStrip patched inference: when an image (after 1mm resampling) is much larger
+    # than a normal head MRI, a single forward pass can exhaust device memory. In that
+    # case predict the brain-mask signed distance transform with a sliding window.
+    synthstrip_patch_size: int = StripModel.SYNTSTRIP_DIVISIBLE_K * 3  # 192, divisible by the U-Net stride
+    synthstrip_patch_threshold: int = 320  # max spatial dim (voxels) before patching kicks in
+    synthstrip_patch_overlap: float = 0.25
 
     BATCH_SIZE = 1  # Prediction currently supports only batch size 1.
 
@@ -284,9 +293,40 @@ class Application:
         _, unique_idx = np.unique(self.labels_qc, return_index=True)
         return self.names_qc[unique_idx].tolist()[1:]
 
+    def _predict_synthstrip_sdt(self, image_strip: torch.Tensor) -> torch.Tensor:
+        """Predict the SynthStrip signed distance transform.
+
+        For images that are much larger than a normal head MRI, a single forward pass
+        may exhaust device memory, so a sliding-window (patched) strategy is used and the
+        per-patch predictions are blended. Normal-sized images use a single forward pass.
+        """
+        spatial_shape = tuple(int(s) for s in image_strip.shape[2:])
+        if max(spatial_shape) <= self.synthstrip_patch_threshold:
+            return self.synthstrip_model(image_strip)
+
+        patch_size = tuple(min(self.synthstrip_patch_size, s) for s in spatial_shape)
+        logger.info(
+            f"SynthStrip input {spatial_shape} exceeds {self.synthstrip_patch_threshold}; "
+            f"using patched inference with roi {patch_size}."
+        )
+        sdt = sliding_window_inference(
+            inputs=image_strip,
+            roi_size=patch_size,
+            sw_batch_size=self.BATCH_SIZE,
+            predictor=self.synthstrip_model,
+            overlap=self.synthstrip_patch_overlap,
+            mode="gaussian",
+            sw_device=torch.device(self.device),
+            device=torch.device(self.device),
+        )
+        if isinstance(image_strip, MetaTensor) and not isinstance(sdt, MetaTensor):
+            sdt = MetaTensor(sdt, affine=image_strip.affine)
+        assert isinstance(sdt, MetaTensor), "SynthStrip output must be a MetaTensor"
+        return sdt
+
     @torch.inference_mode()
     def predict_synthstrip_batch(self, data):
-        brain_mask = self.synthstrip_model(data["image_strip"].to(self.device, dtype=self.dtype))
+        brain_mask = self._predict_synthstrip_sdt(data["image_strip"].to(self.device, dtype=self.dtype))
         reorient = transforms.Orientation(axcodes="RAS")
         results = []
         for i in range(brain_mask.shape[0]):
